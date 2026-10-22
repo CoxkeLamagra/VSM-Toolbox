@@ -8,6 +8,6 @@ services:
       VSM_COOKIE_SECURE: ${VSM_COOKIE_SECURE:-0}
     volumes:
       - vsm-data:/data
-    restart: unless-stopped
+    restart: always
 volumes:
   vsm-data:

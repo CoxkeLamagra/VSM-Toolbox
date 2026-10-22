@@ -5,7 +5,8 @@ A local web application for mapping IT service value streams and documenting the
 ## Features
 
 - Create value streams with a customer, desired outcome, and description.
-- Build a visual sequence of delivery steps; drag cards to reorder them.
+- Explore an interactive diagram with delivery steps, customer outcomes, and all linked processes. Pan, drag cards, zoom with the mouse wheel or touch pinch, and fit the whole map to the screen.
+- Use Edit flow to manage delivery steps and reorder their sequence.
 - Assign responsible teams and record active work and waiting time in minutes.
 - See total lead time, work time, and flow efficiency for each map.
 - Maintain a shared process library with owners, descriptions, and work instructions.
@@ -25,6 +26,20 @@ python3 -m unittest discover -s tests -v
 ```
 
 Open port 8080 in your browser. The default bind address is `127.0.0.1`. The application creates `data/vsm.sqlite3` on first launch. Create the first Admin account in the browser. `python3 app.py` also supports development without the update supervisor; web updates will be unavailable in that mode. No initial example data is inserted. Set `VSM_HOST`, `VSM_PORT`, and `VSM_DATABASE` to override defaults.
+
+## Interactive value stream diagrams
+
+Open a value stream and select **Diagram**. Solid green arrows show the delivery sequence, and dashed blue connectors link steps to their supporting processes. Every process linked to a step in the selected stream is included. A shared process appears once with connectors to all relevant steps.
+
+- Drag empty background to pan; drag a card to arrange the visual. Connectors follow the cards.
+- Use **+**, **−**, the mouse wheel, or a two-finger pinch to zoom. Zoom follows the pointer or pinch center.
+- Use **Fit to screen** to see the complete map, or **Reset layout** to restore the automatic arrangement.
+- Double-click a step or process, or focus it and press Enter, to open its details. Existing Admin/Editor/Viewer permissions still apply.
+- With the diagram focused, arrow keys pan, **+ / −** zoom, and **0** fits. With a card focused, arrow keys move it; Shift moves it farther.
+
+Visual layout and zoom are saved per account and stream in the current browser. They do not change shared data, process links, or delivery order. Viewers can explore and arrange their own visual without gaining editing access. Use **Edit flow** to change the actual step sequence and manage process links. Layouts are personal to a browser, rather than shared server layouts.
+
+Optional browser integration checks run against a temporary database and server, never your existing workspace. With Playwright and its Chromium browser installed in your development environment, run `node tests/diagram.cjs`. `VSM_CHROMIUM` can select an existing Chromium binary, and `PYTHON` can select the Python executable. This checks pan, drag, zoom, fit/reset, keyboard access, process connectors, layout persistence, Viewer restrictions, and touch pinch. Playwright is a development check only; the deployed application still has no third-party runtime dependencies.
 
 ## Primary installation: Debian 13 LXC
 
@@ -69,6 +84,25 @@ The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation t
 The installer starts the unprivileged update supervisor, which manages the web process.
 
 Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds on all container interfaces; it does not modify your firewall or install a reverse proxy. No privileged LXC features or Docker nesting are needed.
+
+## Automatic startup after reboot
+
+For the primary Debian 13 LXC installation, the installer enables `vsm-toolbox.service` for `multi-user.target` and verifies that it is enabled before reporting success. The supervisor and application start automatically when the LXC boots, using the existing database and any activated web update. The service also restarts automatically if its supervisor exits, with a five-second retry delay. Local startup does not require GitHub connectivity.
+
+To enable startup for an existing installation or inspect the setting, run inside the LXC:
+
+```sh
+systemctl enable --now vsm-toolbox.service
+systemctl is-enabled vsm-toolbox.service
+systemctl status vsm-toolbox.service
+# After a normal reboot:
+journalctl -b -u vsm-toolbox.service
+curl --fail http://127.0.0.1:8080/api/health
+```
+
+The LXC host must also start the container itself after a physical host reboot. For Proxmox, enable **Start at boot** for the container (or run `pct set <CTID> -onboot 1` on the Proxmox host). For other LXC hosts, enable the equivalent container autostart option. The application installer runs inside the container and cannot configure its host.
+
+For Docker, Compose specifies `restart: always`. After running `docker compose up -d --build` once, Docker restores the existing container after its daemon starts; the named volume preserves accounts, data, and web updates. On a Debian Docker host, enable the daemon with `systemctl enable --now docker.service`. A manual container stop suppresses restarts until it is started again or the daemon restarts; `docker compose down` removes the container and requires `docker compose up -d` to recreate it. The container host's own boot policy remains a host setting.
 
 ## Local accounts and permissions
 

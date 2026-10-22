@@ -170,6 +170,7 @@ mv -Tf "$TEMP/new-link" "$APP"
 install -m 0644 "$SOURCE/deploy/vsm-toolbox.service" "$UNIT"
 systemctl daemon-reload
 systemctl enable vsm-toolbox
+systemctl is-enabled --quiet vsm-toolbox || { echo 'Service was not enabled for boot.' >&2; exit 1; }
 systemctl restart vsm-toolbox
 READY=0
 for ((attempt=0; attempt<30; attempt++)); do
@@ -190,5 +191,6 @@ curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/sessio
 ACTIVATED=0
 printf '\nVSM Toolbox installed and healthy.\nOpen http://<LXC-IP>:8080 on your trusted private network.\n'
 echo "Database: $DATA/vsm.sqlite3"
+echo 'Boot startup: enabled (systemd vsm-toolbox.service)'
 echo 'Logs: journalctl -u vsm-toolbox -f'
 echo 'Create the first Admin account in the browser. Use HTTPS for access beyond a trusted local connection.'

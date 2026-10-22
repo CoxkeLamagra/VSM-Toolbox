@@ -1,0 +1,105 @@
+// Optional browser integration test. Starts its own server and temporary SQLite workspace.
+const {chromium} = require('playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const {spawn} = require('node:child_process');
+const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
+(async()=>{
+  const root=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'vsm-diagram-test-'));
+  const socket=net.createServer();await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));
+  const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
+  const base=`http://127.0.0.1:${port}`;
+  const server=spawn(process.env.PYTHON||'python3',['app.py'],{cwd:root,env:{...process.env,VSM_DATABASE:path.join(temp,'test.sqlite3'),VSM_PORT:String(port),VSM_HOST:'127.0.0.1',VSM_UPDATE_DIR:path.join(temp,'updates')},stdio:['ignore','ignore','pipe']});
+  let log='',browser;server.stderr.on('data',data=>log+=data);
+  try {
+    let ready=false;
+    for(let i=0;i<100;i++){try{ready=(await fetch(base+'/api/health')).ok;if(ready)break;}catch{}await delay(100);}
+    assert.ok(ready,'Test server did not start: '+log);
+    let cookie='',csrf='';
+    async function api(route,data){
+      const response=await fetch(base+'/api/'+route,{method:data===undefined?'GET':'POST',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':csrf},body:data===undefined?undefined:JSON.stringify(data)});
+      const result=await response.json();assert.ok(response.ok,JSON.stringify(result));
+      if(response.headers.get('set-cookie'))cookie=response.headers.get('set-cookie').split(';')[0];
+      if(result.csrf_token)csrf=result.csrf_token;
+      return result;
+    }
+    await api('auth/register',{username:'diagram-admin',password:'diagram-test-password-123'});
+    const adminCookie=cookie;
+    const stream=await api('streams',{name:'Restore business service',customer:'Managed service customer',outcome:'Customer service restored'});
+    const steps=[];
+    for(const name of ['Report incident','Investigate incident','Restore service'])steps.push(await api('steps',{stream_id:stream.id,name,work_minutes:15,wait_minutes:30,position:steps.length,owner:'Service desk'}));
+    const processes=[];
+    for(const name of ['Incident management','Assess impact <script>test</script>','Service validation'])processes.push(await api('processes',{name,owner:'Service operations',description:'Repeatable service delivery procedure',procedure:'Confirm the customer outcome.'}));
+    for(const [i,ids] of [[0,[processes[0].id,processes[1].id]],[1,[processes[0].id]],[2,[processes[2].id]]]){
+      const response=await fetch(base+`/api/steps/${steps[i].id}/processes`,{method:'PUT',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':csrf},body:JSON.stringify({process_ids:ids})});assert.equal(response.status,200);
+    }
+    await api('users',{username:'diagram-viewer',password:'diagram-test-password-123',role:'Viewer'});
+    const before=await api('data');
+    browser=await chromium.launch({headless:true,executablePath:process.env.VSM_CHROMIUM||undefined,args:['--no-sandbox']});
+    const context=await browser.newContext({viewport:{width:1500,height:1100}});
+    const addCookie=(ctx,value)=>ctx.addCookies([{name:'vsm_session',value:value.split('=')[1],url:base,httpOnly:true,sameSite:'Strict'}]);
+    await addCookie(context,adminCookie);
+    const page=await context.newPage(),errors=[],writes=[];
+    page.on('pageerror',e=>errors.push(e.message));
+    page.on('request',r=>{if(['POST','PUT','DELETE'].includes(r.method()))writes.push(r.url());});
+    await page.goto(base);await page.getByRole('button',{name:'Open map'}).click();
+    const svg=page.locator('#streamDiagram');await svg.waitFor();
+    assert.equal(await svg.locator('.diagram-node.delivery-step').count(),3);
+    assert.equal(await svg.locator('.diagram-node.process').count(),3,'Shared process must be drawn once');
+    assert.equal(await svg.locator('.diagram-edge.process').count(),4,'Every process link must be drawn');
+    assert.equal(await svg.locator('.diagram-edge.flow').count(),4);
+    assert.equal(await svg.locator('script').count(),0,'Names must be escaped');
+    await svg.locator(`[data-node-key="process-${processes[0].id}"]`).dblclick();
+    await page.getByRole('dialog').waitFor();
+    assert.ok(await page.getByRole('button',{name:'Save changes',exact:true}).isVisible());
+    await page.getByRole('button',{name:'Close',exact:true}).click();
+    const zoom=page.locator('#diagramZoom');
+    const firstZoom=parseInt(await zoom.textContent());
+    await page.getByRole('button',{name:'Zoom in',exact:true}).click();assert.ok(parseInt(await zoom.textContent())>firstZoom);
+    await page.getByRole('button',{name:'Zoom out',exact:true}).click();
+    await page.getByRole('button',{name:'Fit to screen',exact:true}).click();
+    await svg.scrollIntoViewIfNeeded();
+    const scene=svg.locator('.diagram-scene'),cameraBefore=await scene.getAttribute('transform'),box=await svg.boundingBox();
+    await page.mouse.move(box.x+box.width-15,box.y+box.height-15);await page.mouse.down();await page.mouse.move(box.x+box.width-100,box.y+box.height-60,{steps:8});await page.mouse.up();
+    assert.notEqual(await scene.getAttribute('transform'),cameraBefore,'Dragging background must pan');
+    await page.getByRole('button',{name:'Fit to screen',exact:true}).click();
+    const node=svg.locator(`[data-node-key="step-${steps[0].id}"]`),original=await node.getAttribute('transform');
+    const edge=svg.locator('.diagram-edge.process').first(),edgeBefore=await edge.getAttribute('d');
+    const nodeBox=await node.boundingBox();
+    await page.mouse.move(nodeBox.x+nodeBox.width/2,nodeBox.y+nodeBox.height/2);await page.mouse.down();await page.mouse.move(nodeBox.x+nodeBox.width/2+65,nodeBox.y+nodeBox.height/2+25,{steps:8});await page.mouse.up();
+    const moved=await node.getAttribute('transform');assert.notEqual(moved,original);assert.notEqual(await edge.getAttribute('d'),edgeBefore,'Links must follow moved cards');
+    await page.reload();await page.getByRole('button',{name:'Open map'}).click();assert.equal(await node.getAttribute('transform'),moved,'Personal layout must survive reload');
+    await svg.focus();const wheelBefore=parseInt(await zoom.textContent());const bounds=await svg.boundingBox();
+    await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);await page.mouse.wheel(0,-120);await delay(100);assert.ok(parseInt(await zoom.textContent())>wheelBefore);
+    await svg.focus();await page.keyboard.press('0');const fitted=parseInt(await zoom.textContent());await page.keyboard.press('+');assert.ok(parseInt(await zoom.textContent())>fitted);
+    await node.focus();const keyboardBefore=await node.getAttribute('transform');await page.keyboard.press('ArrowRight');assert.notEqual(await node.getAttribute('transform'),keyboardBefore);
+    await page.getByRole('button',{name:'Reset layout',exact:true}).click();assert.equal(await node.getAttribute('transform'),original);
+    await page.getByRole('button',{name:'Edit flow',exact:true}).click();assert.equal(await page.locator('.step').count(),3);
+    await page.getByRole('button',{name:'Diagram',exact:true}).click();await svg.waitFor();
+    if(process.env.VSM_DIAGRAM_SCREENSHOT)await page.screenshot({path:process.env.VSM_DIAGRAM_SCREENSHOT,fullPage:true});
+    assert.deepEqual(await api('data'),before,'Diagram interactions must never change workspace data');assert.equal(writes.length,0);
+    cookie='';csrf='';await api('auth/login',{username:'diagram-viewer',password:'diagram-test-password-123'});
+    const viewerCookie=cookie;
+    await context.clearCookies();await addCookie(context,viewerCookie);await page.reload();await page.getByRole('button',{name:'Open map'}).click();
+    const viewerNode=svg.locator(`[data-node-key="process-${processes[0].id}"]`);
+    await viewerNode.focus();await page.keyboard.press('Enter');
+    assert.ok(await page.getByLabel('Procedure / work instructions').isDisabled());assert.ok(!await page.getByRole('button',{name:'Save changes',exact:true}).isVisible());
+    await page.getByRole('button',{name:'Close',exact:true}).click();
+    await viewerNode.focus();const viewerBefore=await viewerNode.getAttribute('transform');await page.keyboard.press('ArrowDown');assert.notEqual(await viewerNode.getAttribute('transform'),viewerBefore);
+    const mobileContext=await browser.newContext({viewport:{width:390,height:844},hasTouch:true,isMobile:true});await addCookie(mobileContext,viewerCookie);
+    const mobile=await mobileContext.newPage();mobile.on('pageerror',e=>errors.push(e.message));await mobile.goto(base);await mobile.getByRole('button',{name:'Open map'}).click();
+    const mobileSvg=mobile.locator('#streamDiagram');await mobileSvg.scrollIntoViewIfNeeded();const mb=await mobileSvg.boundingBox();
+    const touch=await mobileContext.newCDPSession(mobile),cx=mb.x+mb.width/2,cy=mb.y+mb.height/2;
+    const mobileZoom=parseInt(await mobile.locator('#diagramZoom').textContent());
+    await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:cx-35,y:cy,id:1},{x:cx+35,y:cy,id:2}]});
+    await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:cx-70,y:cy,id:1},{x:cx+70,y:cy,id:2}]});
+    await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await delay(150);
+    assert.ok(parseInt(await mobile.locator('#diagramZoom').textContent())>mobileZoom,'Pinch must zoom on touch screens');
+    assert.deepEqual(errors,[]);console.log('Diagram browser test passed: links, shared processes, escaping, pan, card drag, connectors, zoom, wheel, keyboard, fit, reset, persistence, unchanged data, Viewer details and touch pinch.');
+  } finally {
+    if(browser)await browser.close();server.kill('SIGTERM');await new Promise(resolve=>server.once('exit',resolve));fs.rmSync(temp,{recursive:true,force:true});
+  }
+})().catch(e=>{console.error(e);process.exitCode=1;});
