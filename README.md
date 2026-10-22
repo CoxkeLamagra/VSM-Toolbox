@@ -28,20 +28,43 @@ Open port 8080 in your browser. The default bind address is `127.0.0.1`. The app
 
 Create a Debian 13 LXC using your container host's standard template, assign a stable address, and enable networking. No privileged container, Docker nesting, or external database is required. A small container with 1 CPU and 512 MB RAM is a reasonable starting allocation; size storage for your database and backups.
 
-Run these commands as root **inside the LXC**, starting with a fresh `/opt/vsm-toolbox` path:
+The installer installs Python 3, Git, CA certificates, curl, and account-management tools; creates an unprivileged `vsm` account; installs the application; enables the systemd service at boot; and waits for a successful API health check. It does not require pip, Docker, or an external database.
+
+Run as root **inside the LXC**. From a checkout containing this installer:
+
+```sh
+bash scripts/install-debian13.sh --source-dir "$PWD"
+```
+
+Alternatively, once the installer is available on GitHub, download it for inspection and then run it:
 
 ```sh
 apt-get update
-apt-get install -y python3 git ca-certificates
-git clone https://github.com/CoxkeLamagra/VSM-Toolbox.git /opt/vsm-toolbox
-useradd --system --user-group --home-dir /var/lib/vsm-toolbox --shell /usr/sbin/nologin vsm
-install -m 0644 /opt/vsm-toolbox/deploy/vsm-toolbox.service /etc/systemd/system/vsm-toolbox.service
-systemctl daemon-reload
-systemctl enable --now vsm-toolbox
-python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/api/health').read().decode())"
+apt-get install -y ca-certificates curl
+curl --fail --show-error --location \
+  https://raw.githubusercontent.com/CoxkeLamagra/VSM-Toolbox/main/scripts/install-debian13.sh \
+  --output /root/install-vsm-toolbox.sh
+# Inspect /root/install-vsm-toolbox.sh before running it.
+bash /root/install-vsm-toolbox.sh
 ```
 
-These instructions require this implementation to be present in the cloned revision. Alternatively copy your reviewed checkout into `/opt/vsm-toolbox` before installing the unit. Access the application using the LXC's address on port 8080. The unit stores data under `/var/lib/vsm-toolbox`, runs as an unprivileged user, and restarts after failure. Diagnose startup with `journalctl -u vsm-toolbox`. For updates, stop the unit, back up the database, update the checkout to a reviewed revision, and restart the unit.
+The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. The initial `v0.1.0` can be installed using a newer copy of the installer even though that tag does not itself include the installer. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
+
+Open `http://<LXC-IP>:8080` from your trusted network. Installation paths:
+
+| Path | Purpose |
+|---|---|
+| `/opt/vsm-toolbox` | Symlink to the active application release |
+| `/opt/vsm-toolbox-releases/` | Root-owned application releases retained for recovery |
+| `/var/lib/vsm-toolbox/vsm.sqlite3` | Persistent local database, owned by `vsm` |
+| `/etc/systemd/system/vsm-toolbox.service` | Service definition |
+| `/var/backups/vsm-toolbox/` | Root-only database backups made before reinstalls/updates |
+
+Run the same installer again to update or reinstall. It preserves the database, backs it up before changing the running application, installs code in a new release directory, and switches the active symlink. If startup fails it restores the previous application and service state; database backups remain available, but the database is not automatically reverted. Package installations are not rolled back. Old code releases and backups are retained; review disk usage periodically.
+
+The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation that it did not create. To migrate the earlier manual installation, stop `vsm-toolbox`, back up `/var/lib/vsm-toolbox/vsm.sqlite3`, and move the old `/opt/vsm-toolbox` directory to a safe archive path before running the installer. The existing `vsm` account must be non-root and belong only to its private `vsm` group. Existing systemd drop-ins are preserved; incompatible custom overrides can cause the health check to fail.
+
+Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds on all container interfaces; it does not modify your firewall or install a reverse proxy. No privileged LXC features or Docker nesting are needed.
 
 **Access boundary:** this initial release has no user authentication or authorization. Anyone who can reach it can read and change all data. Keep it on a trusted private network or behind an authenticated TLS reverse proxy; restrict the LXC's port 8080 accordingly. The built-in Python HTTP server is intended for this small private deployment, not direct Internet exposure. No external services are needed during runtime.
 
