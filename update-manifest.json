@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "update_protocol": 1,
+  "runtime": "python-stdlib",
+  "python_minimum": [3, 11],
+  "files": ["app.py", "updater.py", "web/index.html", "web/app.js", "web/style.css", "update-manifest.json"]
+}

@@ -1,6 +1,6 @@
 # VSM Toolbox
 
-A local web application for mapping IT service value streams and documenting the processes that deliver them. Python 3.11+ and SQLite are the only runtime requirements; there are no third-party Python packages, external databases, CDNs, or cloud services.
+A local web application for mapping IT service value streams and documenting the processes that deliver them. Python 3.11+ and SQLite are the only runtime requirements; there are no third-party Python packages, external databases, or CDNs. Normal application use stays local; optional Admin updates contact GitHub.
 
 ## Features
 
@@ -10,19 +10,21 @@ A local web application for mapping IT service value streams and documenting the
 - See total lead time, work time, and flow efficiency for each map.
 - Maintain a shared process library with owners, descriptions, and work instructions.
 - Link multiple processes to each step and reuse processes across streams.
-- Read, create, update, and delete data through a JSON API.
+- Read, create, update, and delete data through an authenticated JSON API.
+- Create local accounts and assign Admin, Editor, or Viewer access.
+- Check and install the latest GitHub main revision from the Administrator menu.
 
 For example, map **Restore customer service**: report incident → triage → investigate → restore service → confirm resolution. Link incident classification, escalation, and service restoration procedures to the appropriate steps. Maps currently represent a linear current-state journey; branching, parallel flows, version history, and collaborative editing are future extensions.
 
 ## Development
 
 ```sh
-python3 app.py
+python3 updater.py
 # In another terminal:
 python3 -m unittest discover -s tests -v
 ```
 
-Open port 8080 in your browser. The default bind address is `127.0.0.1`. The application creates `data/vsm.sqlite3` on first launch. No initial example data is inserted. Set `VSM_HOST`, `VSM_PORT`, and `VSM_DATABASE` to override defaults.
+Open port 8080 in your browser. The default bind address is `127.0.0.1`. The application creates `data/vsm.sqlite3` on first launch. Create the first Admin account in the browser. `python3 app.py` also supports development without the update supervisor; web updates will be unavailable in that mode. No initial example data is inserted. Set `VSM_HOST`, `VSM_PORT`, and `VSM_DATABASE` to override defaults.
 
 ## Primary installation: Debian 13 LXC
 
@@ -48,7 +50,7 @@ curl --fail --show-error --location \
 bash /root/install-vsm-toolbox.sh
 ```
 
-The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. The initial `v0.1.0` can be installed using a newer copy of the installer even though that tag does not itself include the installer. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
+The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. This installer requires a revision containing `updater.py` and `update-manifest.json`; the older `v0.1.0` tag predates this update protocol and requires its original installer instructions. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
 
 Open `http://<LXC-IP>:8080` from your trusted network. Installation paths:
 
@@ -64,9 +66,39 @@ Run the same installer again to update or reinstall. It preserves the database, 
 
 The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation that it did not create. To migrate the earlier manual installation, stop `vsm-toolbox`, back up `/var/lib/vsm-toolbox/vsm.sqlite3`, and move the old `/opt/vsm-toolbox` directory to a safe archive path before running the installer. The existing `vsm` account must be non-root and belong only to its private `vsm` group. Existing systemd drop-ins are preserved; incompatible custom overrides can cause the health check to fail.
 
+The installer starts the unprivileged update supervisor, which manages the web process.
+
 Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds on all container interfaces; it does not modify your firewall or install a reverse proxy. No privileged LXC features or Docker nesting are needed.
 
-**Access boundary:** this initial release has no user authentication or authorization. Anyone who can reach it can read and change all data. Keep it on a trusted private network or behind an authenticated TLS reverse proxy; restrict the LXC's port 8080 accordingly. The built-in Python HTTP server is intended for this small private deployment, not direct Internet exposure. No external services are needed during runtime.
+## Local accounts and permissions
+
+On an empty accounts database, the sign-in page offers **Create your Admin account**. The first successful registration becomes Admin, and public registration then closes. Registration is serialized so simultaneous requests cannot create multiple first accounts. Existing value streams and processes remain intact when upgrading from a version without accounts. Complete initial registration before opening access to other users.
+
+Open **Administrator → Account administration** to create accounts or use **Account Overview** to edit usernames, reset passwords, assign a role, and remove accounts. Each account has one of these predefined roles:
+
+| Role | Access |
+|---|---|
+| Admin | All content, local account management, and application updates |
+| Editor | Read, create, edit and remove streams, steps and processes |
+| Viewer | Read streams and process documentation only |
+
+Usernames are case-insensitive and contain 3–64 letters, numbers, dots, underscores or hyphens. Passwords contain 12–128 characters and are stored as individually salted PBKDF2-SHA256 hashes (600,000 iterations). Passwords are never returned by the API. There are no external identity providers or default credentials. Admins reset passwords locally; automated email recovery is not included. The last Admin cannot be removed or demoted.
+
+Sessions last up to 12 hours and use opaque HttpOnly, SameSite=Strict cookies. Password, username or role changes revoke that account's sessions; removal immediately revokes access. Sign-in attempts are limited to ten failures per client IP per five-minute window. Application mutations require both an authenticated session and its CSRF token; read-only controls are also enforced by the API.
+
+Use a trusted private network and HTTPS when carrying credentials beyond the local machine. TLS is provided by your reverse proxy. When serving exclusively over HTTPS, set `VSM_COOKIE_SECURE=1` in the service environment or Docker configuration so browsers only send session cookies over HTTPS. The application does not trust forwarding headers to change cookie security automatically. Keep the Python HTTP service behind your private-network boundary or reverse proxy.
+
+## Updates from the Administrator menu
+
+Open **Administrator → Application updates**, select **Check for updates**, then **Update from main**. This targets the latest commit published to the repository's `main` branch, rather than the latest GitHub Release tag. Only Admins can request or view updates; the source repository and branch cannot be overridden through the API.
+
+The supervisor checks the GitHub commit, downloads that exact revision over verified HTTPS, validates the supported update manifest and Python syntax, stops the web process, and makes an integrity-checked SQLite backup. It starts the new application, checks its revision and health, and revokes existing sessions after success. Sign in again after installation. If startup fails, it restores the previous application **and database**. A persistent recovery record also allows the supervisor to recover an interrupted installation on its next start. Writes pause during installation; checking and downloading leave the application available.
+
+Update code, activation state and backups live under `updates/` beside the database (`/var/lib/vsm-toolbox/updates` in LXC; `/data/updates` in Docker). Retain this directory along with the database. Applied code and activation state survive service/container restarts and container recreation with the same data volume. No root access, Docker socket, package manager, or privileged container is used for web updates. Old releases and backups are retained; monitor storage usage and keep external backups as well.
+
+GitHub access to `api.github.com` and `codeload.github.com` is required for checking/downloading updates. Normal local use does not need these destinations. Public repositories use anonymous GitHub access by default. For a private repository or higher API rate limits, optionally configure `VSM_GITHUB_TOKEN` with repository contents read permission before starting the service. In LXC, systemd reads optional settings from `/etc/default/vsm-toolbox` (keep it root-owned with mode `0600`); Compose forwards this variable from its host environment. The token is used only on the initial GitHub API request, never exposed in the UI or API and never forwarded to redirected download hosts. Rate limits, access denials and network failures are reported on the update page without changing the installed application. Releases that require a different Python version, dependencies or update protocol are rejected and require the Debian installer or a new Docker image. The updater engine and base OS/image are maintained through the installer/image; web updates replace the application code and assets.
+
+**One-time upgrade from v0.1.0:** install this version using the updated Debian installer, or rebuild/recreate the Docker container once. That enables the supervisor and Admin menu. Subsequent compatible application updates need only the web UI. A deliberate installer rerun clears the previous web-update activation and selects the newly installed code. Docker retains web-update activation in its volume; to deliberately replace it with the image's bundled code, stop the container, archive `/data/updates/active.json`, then recreate it with the selected image. Back up the database before any downgrade.
 
 ## Docker alternative
 
@@ -79,11 +111,23 @@ The named `vsm-data` volume persists the database. Compose publishes on host loo
 
 ## API
 
-All requests and responses use JSON. IDs are integers; updates accept a subset of the documented fields. Successful creation returns 201, reads/updates/deletes return 200, invalid requests return 400, and missing resources return 404. There is no API authentication; the same private-network boundary applies.
+All requests and responses use JSON. IDs are integers; updates accept a subset of the documented fields. Successful creation returns 201, reads/updates/deletes return 200, update requests return 202, invalid requests return 400, unauthenticated requests return 401, insufficient permissions return 403, missing resources return 404, account/update conflicts return 409, and throttled sign-ins return 429. Send `Content-Type: application/json` for every POST, PUT or DELETE (an empty body can be `{}`).
+
+First sign in with `POST /api/auth/login`, retain the returned session cookie, and pass the response's `csrf_token` in `X-CSRF-Token` on each mutation. `GET /api/session` retrieves the current user and CSRF token. Except for health and session status, all data reads require a session; all content writes require Admin or Editor. Account and update operations require Admin.
 
 | Route | Methods | Fields / purpose |
 |---|---|---|
-| `/api/health` | GET | Server and database connectivity |
+| `/api/health` | GET | Public health, running revision and update protocol |
+| `/api/session` | GET | Current account, CSRF token, and whether first registration is required |
+| `/api/auth/register` | POST | First account only: `username`, `password`; always creates Admin |
+| `/api/auth/login` | POST | `username`, `password`; sets cookie and returns CSRF token |
+| `/api/auth/logout` | POST | Revokes current session |
+| `/api/users` | GET, POST | Admin account list/create: `username`, `password`, `role` (defaults to Viewer) |
+| `/api/users/{id}` | GET, PUT, DELETE | Admin account read/edit/remove; omit password on edit to keep it |
+| `/api/roles` | GET | Admin-only list of assignable roles |
+| `/api/updates` | GET | Admin-only installed/latest revision, operation status and availability |
+| `/api/updates/check` | POST | Admin-only queue a GitHub check; empty object |
+| `/api/updates/install` | POST | Admin-only queue update from main; empty object |
 | `/api/data` | GET | Complete workspace including links |
 | `/api/streams` | GET, POST | `name` (required), `customer`, `outcome`, `description` |
 | `/api/streams/{id}` | GET, PUT, DELETE | Read/update/delete a stream; deletion cascades to steps |
@@ -94,7 +138,10 @@ All requests and responses use JSON. IDs are integers; updates accept a subset o
 | `/api/steps/{id}/processes` | PUT | Replace links with `{"process_ids": [1, 2]}`; empty list unlinks all |
 
 ```sh
+# After logging in and saving its cookie in session.cookies and CSRF token in CSRF_TOKEN:
 curl -X POST http://127.0.0.1:8080/api/streams \
+  --cookie session.cookies \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Restore customer service","customer":"Managed service customer","outcome":"Service restored"}'
 ```

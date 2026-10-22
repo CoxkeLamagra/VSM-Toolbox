@@ -10,7 +10,8 @@ WorkingDirectory=/opt/vsm-toolbox
 Environment=VSM_HOST=0.0.0.0
 Environment=VSM_PORT=8080
 Environment=VSM_DATABASE=/var/lib/vsm-toolbox/vsm.sqlite3
-ExecStart=/usr/bin/python3 /opt/vsm-toolbox/app.py
+EnvironmentFile=-/etc/default/vsm-toolbox
+ExecStart=/usr/bin/python3 /opt/vsm-toolbox/updater.py
 Restart=on-failure
 StateDirectory=vsm-toolbox
 UMask=0077

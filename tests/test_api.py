@@ -9,31 +9,47 @@ import app
 
 
 class ApiTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory()
-        app.DB = Path(cls.temp.name) / 'test.sqlite3'
+    bootstrap = True
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous_db = app.DB
+        app.DB = Path(self.temp.name) / 'test.sqlite3'
         app.initialize()
-        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.client = self.new_client()
+        if self.bootstrap:
+            self.assertEqual(self.request('POST', '/api/auth/register', {'username':'admin','password':'admin-password-123'})[0], 201)
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.thread.join()
-        cls.temp.cleanup()
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.temp.cleanup()
+        app.DB = self.previous_db
 
-    def request(self, method, path, data=None, headers=None):
+    def new_client(self):
+        return {'cookie': '', 'csrf': ''}
+
+    def request(self, method, path, data=None, headers=None, client=None):
+        client = self.client if client is None else client
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
-        conn.request(method, path, json.dumps(data) if data is not None else None,
-                     headers or {'Content-Type': 'application/json'})
+        request_headers = {'Content-Type':'application/json', 'Cookie':client['cookie'], 'X-CSRF-Token':client['csrf']}
+        request_headers.update(headers or {})
+        conn.request(method, path, json.dumps(data) if data is not None else None, request_headers)
         response = conn.getresponse()
         body = response.read()
         status = response.status
+        cookie = response.getheader('Set-Cookie')
         conn.close()
-        return status, json.loads(body)
+        result = json.loads(body)
+        if cookie:
+            client['cookie'] = cookie.split(';', 1)[0]
+        if 'csrf_token' in result:
+            client['csrf'] = result['csrf_token'] or ''
+        return status, result
 
     def test_service_delivery_lifecycle_and_persistence(self):
         status, stream = self.request('POST', '/api/streams', {'name':'Restore service','customer':'Managed service client'})
@@ -64,7 +80,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.request('POST','/api/steps',{'name':'bad','stream_id':1,'work_minutes':-1})[0],400)
         self.assertEqual(self.request('PUT','/api/streams/99999',{'name':'missing'})[0],404)
         self.assertEqual(self.request('POST','/api/streams',{'name':'x'},{'Origin':'https://other.example'})[0],403)
-        self.assertEqual(self.request('GET','/api/health')[1],{'status':'ok'})
+        self.assertEqual(self.request('GET','/api/health')[1]['status'],'ok')
 
     def test_static_application(self):
         conn = http.client.HTTPConnection('127.0.0.1',self.server.server_port)

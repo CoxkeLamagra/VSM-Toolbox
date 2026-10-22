@@ -74,6 +74,10 @@ cleanup() {
                 rm -f "$APP"
             fi
             if ((HAD_UNIT)); then cp -p "$TEMP/previous.service" "$UNIT"; else rm -f "$UNIT"; fi
+            if [[ -f $TEMP/previous-active.json ]]; then
+                cp -p "$TEMP/previous-active.json" "$DATA/updates/active.json"
+                chown vsm:vsm "$DATA/updates/active.json"
+            fi
             systemctl daemon-reload || true
             if ((WAS_ENABLED)); then systemctl enable vsm-toolbox || true; else systemctl disable vsm-toolbox || true; fi
             if ((WAS_ACTIVE)); then systemctl start vsm-toolbox || true; fi
@@ -101,7 +105,7 @@ else
     git -C "$TEMP/source" checkout -q --detach FETCH_HEAD
     SOURCE=$TEMP/source
 fi
-for file in app.py web/index.html web/app.js web/style.css deploy/vsm-toolbox.service; do
+for file in app.py updater.py update-manifest.json web/index.html web/app.js web/style.css deploy/vsm-toolbox.service; do
     [[ -f $SOURCE/$file && ! -L $SOURCE/$file ]] || { echo "Required source file missing or symlinked: $file" >&2; exit 1; }
 done
 # Do not adopt an existing account with unexpected privileges.
@@ -117,7 +121,13 @@ install -d -m 0755 "$RELEASES"
 touch "$RELEASES/.installer-managed"
 NEW=$(mktemp -d "$RELEASES/release-XXXXXXXX")
 chmod 0755 "$NEW"
-install -m 0644 "$SOURCE/app.py" "$NEW/app.py"
+for file in app.py updater.py update-manifest.json; do install -m 0644 "$SOURCE/$file" "$NEW/$file"; done
+REVISION=local
+if git -C "$SOURCE" diff --quiet HEAD -- app.py updater.py web update-manifest.json 2>/dev/null && \
+   [[ -z $(git -C "$SOURCE" ls-files --others --exclude-standard -- app.py updater.py web update-manifest.json) ]]; then
+    REVISION=$(git -C "$SOURCE" rev-parse HEAD)
+fi
+printf '%s\n' "$REVISION" > "$NEW/REVISION"
 install -d -m 0755 "$NEW/web"
 for file in index.html app.js style.css; do install -m 0644 "$SOURCE/web/$file" "$NEW/web/$file"; done
 install -d -o vsm -g vsm -m 0700 "$DATA"
@@ -150,6 +160,10 @@ PY
     chmod 0600 "$BACKUP"
     echo "Database backup: $BACKUP"
 fi
+# Preserve web-update activation metadata for installer rollback, then select the installed code.
+UPDATE_ACTIVE=$DATA/updates/active.json
+if [[ -f $UPDATE_ACTIVE ]]; then cp -p "$UPDATE_ACTIVE" "$TEMP/previous-active.json"; fi
+rm -f "$UPDATE_ACTIVE"
 # Atomically switch code; old releases remain available for recovery.
 ln -s "$NEW" "$TEMP/new-link"
 mv -Tf "$TEMP/new-link" "$APP"
@@ -171,10 +185,10 @@ if ((READY == 0)); then
     echo 'Service did not become healthy on port 8080.' >&2
     exit 1
 fi
-curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/data | \
-    python3 -c 'import json,sys; data=json.load(sys.stdin); assert all(isinstance(data[k], list) for k in ("streams", "steps", "processes", "step_processes"))'
+curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/session | \
+    python3 -c 'import json,sys; data=json.load(sys.stdin); assert "setup_required" in data and "user" in data'
 ACTIVATED=0
 printf '\nVSM Toolbox installed and healthy.\nOpen http://<LXC-IP>:8080 on your trusted private network.\n'
 echo "Database: $DATA/vsm.sqlite3"
 echo 'Logs: journalctl -u vsm-toolbox -f'
-echo 'This release has no authentication. Keep port 8080 private or use an authenticated reverse proxy.'
+echo 'Create the first Admin account in the browser. Use HTTPS for access beyond a trusted local connection.'
