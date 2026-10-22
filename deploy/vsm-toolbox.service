@@ -1,0 +1,23 @@
+[Unit]
+Description=VSM Toolbox
+After=network.target
+
+[Service]
+Type=simple
+User=vsm
+Group=vsm
+WorkingDirectory=/opt/vsm-toolbox
+Environment=VSM_HOST=0.0.0.0
+Environment=VSM_PORT=8080
+Environment=VSM_DATABASE=/var/lib/vsm-toolbox/vsm.sqlite3
+ExecStart=/usr/bin/python3 /opt/vsm-toolbox/app.py
+Restart=on-failure
+StateDirectory=vsm-toolbox
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
