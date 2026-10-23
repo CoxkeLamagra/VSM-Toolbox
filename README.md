@@ -126,7 +126,7 @@ Use a trusted private network and HTTPS when carrying credentials beyond the loc
 
 Open **Administrator → Application updates**, select **Check for updates**, then **Update from main**. This targets the latest commit published to the repository's `main` branch, rather than the latest GitHub Release tag. Only Admins can request or view updates; the source repository and branch cannot be overridden through the API.
 
-The supervisor checks the GitHub commit, downloads that exact revision over verified HTTPS, validates the supported update manifest and Python syntax, stops the web process, and makes an integrity-checked SQLite backup. It starts the new application, checks its revision and health, and revokes existing sessions after success. Sign in again after installation. If startup fails, it restores the previous application **and database**. A persistent recovery record also allows the supervisor to recover an interrupted installation on its next start. Writes pause during installation; checking and downloading leave the application available.
+The supervisor checks the GitHub commit, downloads that exact revision over verified HTTPS, validates the supported update manifest and Python syntax, stops the web process, and creates a self-contained, integrity-checked application-and-database backup before switching code. Failure to create the backup cancels installation. It starts the new application, checks its revision and health, and revokes existing sessions after success. Sign in again after installation. If startup fails, it reconstructs the previous application **and database from the backup archive**, even when the original code directory is missing. A persistent recovery record also allows the supervisor to recover an interrupted installation on its next start. Writes pause during installation; checking and downloading leave the application available.
 
 Update code, activation state and backups live under `updates/` beside the database (`/var/lib/vsm-toolbox/updates` in LXC; `/data/updates` in Docker). Retain this directory along with the database. Applied code and activation state survive service/container restarts and container recreation with the same data volume. No root access, Docker socket, package manager, or privileged container is used for web updates. Old releases and backups are retained; monitor storage usage and keep external backups as well.
 
@@ -182,9 +182,42 @@ curl -X POST http://127.0.0.1:8080/api/streams \
 
 Work/wait times must be finite nonnegative numbers in minutes. Flow efficiency is work time divided by work plus waiting time. A process can link to many steps; deleting a stream preserves its processes. Reordering saves positions through step updates. This version assumes one editor at a time; simultaneous edits are not conflict managed.
 
-## Backups
+## Backups and restore from the Admin interface
 
-Use SQLite's backup API to obtain a consistent live backup (choose a protected destination outside the checkout):
+Open **Administrator → Backups & restore**. Only Admin accounts can list or download backups, create manual backups, upload, restore, or delete backup files. All write actions require the session's CSRF token. Manual backup and restore work offline, without GitHub access.
+
+- **Create manual backup** pauses the web process briefly and produces a `.vsm-backup.zip` containing the six application runtime files, the SQLite database (including local accounts), revision metadata, and checksums. The application restarts after capture.
+- **Download** saves a server backup to your computer. Keep copies on another system to protect against disk failure.
+- **Restore** beside a saved backup restores that application's code, accounts, and database. The selected archive is validated before the application stops. A full **pre-restore safety backup** captures the current state before any replacement; failed startup restores that safety snapshot.
+- **Upload and restore** accepts a trusted `.vsm-backup.zip` (maximum 128 MiB compressed and unpacked). Archive paths, regular-file types, exact file membership, checksums, Python syntax, runtime compatibility, SQLite integrity/schema and the presence of an Admin account are checked. Arbitrary archive paths and symlinks are never extracted. Invalid uploads are rejected without changing the running workspace.
+- **Delete selected backups** permanently removes only explicitly selected files after confirmation. Backups referenced by an active recovery record are protected. Legacy database-only files in the application's backup directory can be downloaded or deleted, but are not offered as full application restore points.
+
+A successful restore revokes sessions. Sign in using an account and password contained in the restored backup; newer accounts and data are replaced by the selected snapshot. Full backups contain executable application code and local account hashes: restore only trusted backups and protect downloaded files. Checksums detect corruption, not maliciously modified archives. The service remains unprivileged throughout.
+
+Archives are retained under `/var/lib/vsm-toolbox/updates/backups` in LXC or `/data/updates/backups` in Docker. Files use mode `0600` and the directory uses `0700`. No automatic retention deletion is applied; use selective cleanup to manage disk usage. Installer-created, root-owned database backups under `/var/backups/vsm-toolbox` are separate and are not deleted by the web interface. Backups do not include the base OS, systemd/Compose settings, external TLS certificates, environment secrets, browser-only diagram layouts, or other backup archives.
+
+Every UI update which proceeds to installation first creates a full **pre-update** snapshot. Download/validation failures leave the current application running; backup failures prevent code activation. Failed activation, and recovery after an interrupted activation, restore code and data from the snapshot. For both updates and restores, the recovery record remains until the new application passes its health check. This protects data even if the previous source directory has been removed.
+
+**Upgrade existing supervisors once:** rerun this version's Debian installer or rebuild/recreate the Docker container to install the enhanced supervisor. New backup controls and UI installation requests reject an older supervisor that cannot guarantee a full application backup. A web-only application update does not replace the long-running supervisor engine. Subsequent compatible updates and backup operations use the Admin interface.
+
+Additional API routes:
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/backups` | GET | Admin-only backup list, supervisor capability and operation status |
+| `/api/backups/create` | POST | Queue a full manual snapshot; `{}` |
+| `/api/backups/{id}/download` | GET | Download a saved backup |
+| `/api/backups/upload` | POST | Validate and retain a raw archive; `Content-Type: application/octet-stream`, returns its `id` |
+| `/api/backups/restore` | POST | Queue restoration; `{"id":"...vsm-backup.zip"}` |
+| `/api/backups/cleanup` | POST | Queue deletion of selected IDs; `{"ids":["..."]}` |
+
+Queued operations return 202. Concurrent maintenance requests are refused, and mutations pause during capture, installation and restoration. Uploaded archives can be retained even if the subsequent restore request is cancelled or fails; they remain visible for later selection or cleanup.
+
+Browser integration checks for the complete backup workflow run with `node tests/backups.cjs` when Playwright/Chromium are installed (same `VSM_CHROMIUM` and `PYTHON` options as the diagram test). They start their own supervisor, database and backup storage, leaving the development workspace unchanged.
+
+### Advanced database-only backups
+
+SQLite's backup API remains available for external database-only backup jobs. These files do not contain application code and cannot be uploaded as complete application backups:
 
 ```sh
 python3 - <<'PY'
@@ -195,4 +228,4 @@ with sqlite3.connect('/var/lib/vsm-toolbox/vsm.sqlite3') as source:
 PY
 ```
 
-Run with permission to read the source and write the destination; restrict backup file permissions and keep copies off the LXC. To restore, stop the service, replace the database with a backup, ensure `vsm:vsm` ownership, and restart. Docker backups can use the same Python API against `/data/vsm.sqlite3` inside the container, writing to an attached backup mount.
+Run with permission to read/write those paths and restrict backup permissions. Restore database-only files while the service is stopped and ensure the application version matches the database schema.

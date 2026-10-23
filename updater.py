@@ -18,10 +18,12 @@ import threading
 import time
 import urllib.request
 import uuid
+import zipfile
+import tempfile
 
 REPOSITORY = 'CoxkeLamagra/VSM-Toolbox'
 FILES = ('app.py', 'updater.py', 'web/index.html', 'web/app.js', 'web/style.css', 'update-manifest.json')
-BUSY = ('queued', 'checking', 'downloading', 'installing', 'restarting')
+BUSY = ('queued', 'checking', 'downloading', 'installing', 'restarting', 'backing-up', 'restoring', 'cleaning')
 ROOT = Path(__file__).resolve().parent
 
 
@@ -69,8 +71,8 @@ def status():
     return result
 
 
-def request(action):
-    if action not in ('check', 'install'):
+def request(action, **payload):
+    if action not in ('check', 'install', 'backup', 'restore', 'cleanup'):
         raise ValueError('Unknown update action')
     base = directory()
     base.mkdir(parents=True, exist_ok=True)
@@ -82,7 +84,7 @@ def request(action):
         if current['state'] in BUSY or (base / 'request.json').exists():
             raise RuntimeError('An update operation is already in progress')
         atomic_json(base / 'status.json', {**current, 'state': 'queued', 'message': 'Update operation queued.'})
-        atomic_json(base / 'request.json', {'action': action})
+        atomic_json(base / 'request.json', {'action': action, **payload})
     return {'queued': True}
 
 
@@ -190,6 +192,152 @@ def restore_database(db, backup):
     finally:
         os.close(descriptor)
 
+BACKUP_LIMIT = 128 * 1024 * 1024
+BACKUP_FILES = (*FILES, 'database.sqlite3')
+
+
+def backup_path(identifier):
+    if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]+(?:\.vsm-backup\.zip|\.sqlite3)', identifier):
+        raise ValueError('Invalid backup identifier')
+    path = directory() / 'backups' / identifier
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Backup not found')
+    return path
+
+
+def validate_backup(path, destination=None):
+    if path.stat().st_size > BACKUP_LIMIT:
+        raise ValueError('Backup exceeds 128 MiB')
+    with zipfile.ZipFile(path) as archive:
+        infos = archive.infolist()
+        if len(infos) != len(BACKUP_FILES)+1 or {i.filename for i in infos} != {*BACKUP_FILES, 'backup.json'}:
+            raise ValueError('Backup must contain exactly the supported application files and database')
+        if any(i.file_size > BACKUP_LIMIT or i.compress_type not in (zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED) or i.flag_bits & 1 or (i.external_attr >> 16) & 0o170000 == 0o120000 for i in infos):
+            raise ValueError('Unsupported encrypted, linked or oversized backup entry')
+        if sum(i.file_size for i in infos) > BACKUP_LIMIT or archive.getinfo('backup.json').file_size > 16384:
+            raise ValueError('Unpacked backup exceeds its size limit')
+        manifest = json.loads(archive.read('backup.json'))
+        if not isinstance(manifest,dict) or manifest.get('format') != 1 or not isinstance(manifest.get('sha256'),dict) or set(manifest['sha256']) != set(BACKUP_FILES):
+            raise ValueError('Unsupported backup format')
+        if not isinstance(manifest.get('revision'), str) or len(manifest['revision']) > 100:
+            raise ValueError('Invalid backup revision')
+        for name in BACKUP_FILES:
+            content = archive.read(name)
+            if hashlib.sha256(content).hexdigest() != manifest['sha256'][name]:
+                raise ValueError('Backup checksum mismatch: '+name)
+            if name != 'database.sqlite3' and len(content) > 2_000_000:
+                raise ValueError('Application file too large')
+            if name in ('app.py','updater.py'):
+                compile(content, name, 'exec')
+            if destination:
+                target = destination / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                os.chmod(target, 0o600)
+        application_manifest=json.loads(archive.read('update-manifest.json'))
+        if (not isinstance(application_manifest,dict) or application_manifest.get('update_protocol') != 1 or application_manifest.get('runtime') != 'python-stdlib' or
+                not isinstance(application_manifest.get('files'),list) or any(not isinstance(n,str) for n in application_manifest['files']) or set(application_manifest['files'])!=set(FILES)):
+            raise ValueError('Backup uses an incompatible application runtime')
+        minimum=application_manifest.get('python_minimum', [])
+        if not isinstance(minimum,list) or len(minimum)!=2 or any(type(n) is not int for n in minimum) or tuple(minimum)>sys.version_info[:2]:
+            raise ValueError('Backup requires a different Python version')
+        return manifest
+
+
+def validate_backup_database(path):
+    with sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True) as conn:
+        if conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+            raise ValueError('Backup database failed integrity validation')
+        expected={'streams':{'id','name','customer','outcome','description'},'steps':{'id','stream_id','name','owner','position','work_minutes','wait_minutes'},
+                  'processes':{'id','name','owner','description','procedure'},'step_processes':{'step_id','process_id'},
+                  'users':{'id','username','password_hash','role'},'sessions':{'token_hash','user_id','csrf_token','expires_at'},'login_attempts':{'address','failures','started_at'}}
+        for table,columns in expected.items():
+            if not columns <= {r[1] for r in conn.execute('PRAGMA table_info('+table+')')}:
+                raise ValueError('Backup database is missing required schema: '+table)
+        if not conn.execute("SELECT 1 FROM users WHERE role='Admin' LIMIT 1").fetchone():
+            raise ValueError('Backup must contain at least one Admin account')
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('Backup contains broken data relationships')
+
+
+def create_backup(active, db, reason):
+    base=directory()/'backups'
+    base.mkdir(parents=True,exist_ok=True)
+    os.chmod(base,0o700)
+    identifier=time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex+'.vsm-backup.zip'
+    final=base/identifier
+    with tempfile.TemporaryDirectory(dir=base) as temporary:
+        temporary=Path(temporary)
+        backup_database(db,temporary/'database.sqlite3')
+        hashes={}
+        package=temporary/'bundle.zip'
+        with zipfile.ZipFile(package,'w',compression=zipfile.ZIP_DEFLATED) as archive:
+            for name in BACKUP_FILES:
+                source=temporary/'database.sqlite3' if name=='database.sqlite3' else Path(active['path'])/name
+                if source.is_symlink() or not source.is_file():
+                    raise ValueError('Application backup source missing or linked: '+name)
+                data=source.read_bytes()
+                if len(data)>BACKUP_LIMIT:
+                    raise ValueError('Backup source exceeds size limit')
+                hashes[name]=hashlib.sha256(data).hexdigest()
+                archive.writestr(name,data)
+            archive.writestr('backup.json',json.dumps({'format':1,'revision':active['revision'],'created_at':time.time(),'reason':reason,'sha256':hashes}))
+        validate_backup(package)
+        os.chmod(package,0o600)
+        with package.open('rb') as handle: os.fsync(handle.fileno())
+        os.replace(package,final)
+        descriptor=os.open(base,os.O_RDONLY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+    return final
+
+
+def unpack_backup(path):
+    target=directory()/'releases'/('restore-'+uuid.uuid4().hex)
+    target.mkdir(parents=True)
+    try:
+        metadata=validate_backup(path,target)
+        validate_backup_database(target/'database.sqlite3')
+        (target/'REVISION').write_text(metadata['revision']+'\n')
+        return target,metadata
+    except Exception:
+        shutil.rmtree(target)
+        raise
+
+
+def list_backups():
+    results=[]
+    pending=read_json(directory()/'pending.json',{})
+    for path in sorted([*(directory()/'backups').glob('*.vsm-backup.zip'),*(directory()/'backups').glob('*.sqlite3')],reverse=True):
+        if path.is_symlink(): continue
+        entry={'id':path.name,'size':path.stat().st_size,'created_at':path.stat().st_mtime,'protected':pending.get('backup')==str(path),'restorable':path.name.endswith('.vsm-backup.zip')}
+        if path.suffix=='.sqlite3':
+            entry['reason']='Legacy database-only backup'
+            results.append(entry)
+            continue
+        try:
+            with zipfile.ZipFile(path) as archive:
+                if archive.getinfo('backup.json').file_size>16384: raise ValueError('Oversized metadata')
+                metadata=json.loads(archive.read('backup.json'))
+                if not isinstance(metadata,dict): raise ValueError('Invalid metadata')
+            entry.update({k:metadata.get(k) for k in ('revision','reason','created_at')})
+        except (ValueError,OSError,KeyError,zipfile.BadZipFile,NotImplementedError,RuntimeError):
+            entry['reason']='Invalid backup (can be removed)'
+            entry['restorable']=False
+        results.append(entry)
+    return results
+
+
+def delete_backups(identifiers):
+    if not isinstance(identifiers,list) or not identifiers or any(not isinstance(i,str) for i in identifiers):
+        raise ValueError('Select backup identifiers to remove')
+    paths=[backup_path(i) for i in set(identifiers)]
+    pending=read_json(directory()/'pending.json',{})
+    if any(str(p)==pending.get('backup') for p in paths):
+        raise ValueError('Cannot delete a backup required for recovery')
+    for path in paths: path.unlink()
+    return len(paths)
+
 
 class Supervisor:
     def __init__(self):
@@ -206,10 +354,10 @@ class Supervisor:
     def report(self, state, message, **extra):
         previous = read_json(self.base / 'status.json', {})
         atomic_json(self.base / 'status.json', {**previous, 'state': state, 'message': message,
-                                               'current_revision': self.active['revision'], 'updated_at': time.time(), **extra})
+                                               'current_revision': self.active['revision'], 'backup_protocol':1, 'updated_at': time.time(), **extra})
 
     def start(self):
-        environment = {**os.environ, 'VSM_UPDATER': '1', 'VSM_UPDATE_DIR': str(self.base),
+        environment = {**os.environ, 'VSM_UPDATER': '1', 'VSM_BACKUP_PROTOCOL':'1', 'VSM_UPDATE_DIR': str(self.base),
                        'VSM_DATABASE': str(self.db), 'VSM_REVISION': self.active['revision']}
         self.child = subprocess.Popen([sys.executable, str(Path(self.active['path']) / 'app.py')],
                                       cwd=self.active['path'], env=environment)
@@ -248,8 +396,14 @@ class Supervisor:
     def recover(self):
         pending = read_json(self.base / 'pending.json')
         if pending:
-            restore_database(self.db, Path(pending['backup']))
-            self.active = pending['previous']
+            if pending.get('bundle'):
+                target,metadata=unpack_backup(Path(pending['backup']))
+                restore_database(self.db,target/'database.sqlite3')
+                (target/'database.sqlite3').unlink()
+                self.active={'path':str(target),'revision':metadata['revision']}
+            else:
+                restore_database(self.db, Path(pending['backup']))
+                self.active = pending['previous']
             atomic_json(self.base / 'active.json', self.active)
             (self.base / 'pending.json').unlink()
             self.report('failed', 'Interrupted update recovered. Previous code and database restored.')
@@ -276,11 +430,10 @@ class Supervisor:
             digest = prepare_release(revision, target)
             if self.stopping.is_set():
                 raise RuntimeError('Update interrupted by service shutdown')
-            self.report('installing', 'Backing up the database and switching application code…')
+            self.report('installing', 'Backing up application files and database before switching code…')
             self.stop()
-            backup = self.base / 'backups' / (time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]+'.sqlite3')
-            backup_database(self.db, backup)
-            atomic_json(self.base / 'pending.json', {'previous': previous, 'backup': str(backup)})
+            backup = create_backup(previous, self.db, 'pre-update')
+            atomic_json(self.base / 'pending.json', {'previous': previous, 'backup': str(backup), 'bundle':True})
             pending = True
             self.active = {'path': str(target), 'revision': revision}
             self.report('restarting', 'Starting the updated application and checking health…', backup=str(backup))
@@ -309,6 +462,60 @@ class Supervisor:
                 shutil.rmtree(target)
             self.report('failed', 'Update failed: '+str(exc)+'. Previous application retained.')
 
+    def maintenance(self, operation):
+        action=operation.get('action')
+        if action in ('check','install'):
+            return self.update(action)
+        safety=None
+        target=None
+        pending=False
+        committed=False
+        try:
+            if action=='cleanup':
+                self.report('cleaning','Removing selected backups…')
+                count=delete_backups(operation.get('ids'))
+                self.report('succeeded',f'Removed {count} backup(s).')
+                return
+            if action=='backup':
+                self.report('backing-up','Creating an application and database backup…')
+                self.stop()
+                try:
+                    safety=create_backup(self.active,self.db,'manual')
+                finally:
+                    self.start()
+                if not self.healthy(): raise RuntimeError('Application did not restart after backup')
+                self.report('succeeded','Application and database backup created.',backup=str(safety))
+                return
+            if action!='restore': raise ValueError('Unknown maintenance operation')
+            # Validate everything before stopping the running application.
+            source=backup_path(operation.get('id'))
+            target,metadata=unpack_backup(source)
+            self.report('restoring','Creating a safety backup before restoring…')
+            self.stop()
+            safety=create_backup(self.active,self.db,'pre-restore')
+            atomic_json(self.base/'pending.json',{'previous':dict(self.active),'backup':str(safety),'bundle':True})
+            pending=True
+            restore_database(self.db,target/'database.sqlite3')
+            (target/'database.sqlite3').unlink()
+            self.active={'path':str(target),'revision':metadata['revision']}
+            with sqlite3.connect(self.db) as conn: conn.execute('DELETE FROM sessions')
+            self.report('restarting','Starting the restored application…',backup=str(safety))
+            self.start()
+            if not self.healthy(): raise RuntimeError('Restored application failed its health check')
+            atomic_json(self.base/'active.json',self.active)
+            (self.base/'pending.json').unlink()
+            pending=False
+            committed=True
+            self.report('succeeded','Backup restored. Sign in using an account from the backup.')
+        except Exception as exc:
+            if committed: raise
+            if pending:
+                self.stop()
+                self.recover()
+            if self.child is None: self.start()
+            if target and str(target)!=self.active['path']: shutil.rmtree(target,ignore_errors=True)
+            self.report('failed','Backup operation failed: '+str(exc))
+
     def heartbeat(self):
         while not self.stopping.is_set():
             (self.base / 'heartbeat').touch()
@@ -331,7 +538,7 @@ class Supervisor:
                     if request_file.exists():
                         operation = read_json(request_file)
                         request_file.unlink()
-                        self.update(operation['action'])
+                        self.maintenance(operation)
             finally:
                 self.stop()
                 (self.base / 'heartbeat').unlink(missing_ok=True)

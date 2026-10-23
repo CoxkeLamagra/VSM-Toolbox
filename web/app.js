@@ -1,6 +1,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, view = 'streams', selected = null, saveForm, session = {}, accounts = [], updateStatus = {}, updateTimer;
+let backupState = {backups:[],operation:{}};
 let streamMode = 'diagram', diagramController = null;
 const canEdit = () => ['Admin','Editor'].includes(session.user?.role);
 async function api(path, method = 'GET', data) {
@@ -16,9 +17,10 @@ function error(e) { $('#error').textContent = e.message; $('#error').hidden = fa
 async function refresh() {
   session = await api('session');
   if (!session.user) { state=null; render(); return; }
-  if (session.user.role !== 'Admin' && ['accounts','updates'].includes(view)) view='streams';
+  if (session.user.role !== 'Admin' && ['accounts','updates','backups'].includes(view)) view='streams';
   state = await api('data');
   if (view === 'accounts') accounts = await api('users');
+  if (view === 'backups') backupState = await api('backups');
   if (view === 'updates') updateStatus = await api('updates');
   render();
 }
@@ -91,6 +93,17 @@ $('#content').addEventListener('click', async e=> {
       if(!confirm('Remove this account? Its sessions will be revoked.'))return;
       await api('users/'+id,'DELETE'); await refresh(); return;
     }
+    if(el.dataset.action==='create-backup') {await api('backups/create','POST',{});await refresh();return;}
+    if(el.dataset.action==='restore-backup') {
+      if(!confirm('Restore application code, accounts and data from this trusted backup? Current data will be replaced. A safety backup is created first, and you must sign in again using an account from the backup.'))return;
+      await api('backups/restore','POST',{id:el.dataset.backup});await refresh();return;
+    }
+    if(el.dataset.action==='cleanup-backups') {
+      const ids=[...document.querySelectorAll('[name="backup-select"]:checked')].map(el=>el.value);
+      if(!ids.length){error(new Error('Select backups to remove.'));return;}
+      if(!confirm(`Permanently delete ${ids.length} selected backup(s)?`))return;
+      await api('backups/cleanup','POST',{ids});await refresh();return;
+    }
     if(el.dataset.action==='check-update' || el.dataset.action==='install-update') {
       if(el.dataset.action==='install-update' && !confirm('Update to the latest GitHub main revision? A database backup will be made and the application will briefly restart.'))return;
       await api('updates/'+(el.dataset.action==='check-update'?'check':'install'),'POST',{});
@@ -131,6 +144,8 @@ function render() {
   if(user) $('#logout').onclick=async()=>{try{await api('auth/logout','POST',{});session={};selected=null;view='streams';await refresh();}catch(e){error(e);}};
   if(!user) return renderAuth();
   $('#accountsNav').classList.toggle('active',view==='accounts');
+  $('#backupsNav').classList.toggle('active',view==='backups');
+  if(view==='backups') {$('#streamsNav').classList.remove('active');$('#processNav').classList.remove('active');return renderBackups();}
   $('#updatesNav').classList.toggle('active',view==='updates');
   if(view==='accounts') {$('#streamsNav').classList.remove('active');$('#processNav').classList.remove('active');return renderAccounts();}
   if(view==='updates') {$('#streamsNav').classList.remove('active');$('#processNav').classList.remove('active');return renderUpdates();}
@@ -171,10 +186,30 @@ function editAccount(id) {
 }
 function renderUpdates() {
   $('#breadcrumb').textContent='Administrator / Updates';
-  const busy=['queued','checking','downloading','installing','restarting'].includes(updateStatus.state);
-  $('#content').innerHTML=`<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Application updates</h1><p>Install the latest published revision of the GitHub main branch.</p></div><button data-action="check-update" ${busy||!updateStatus.available?'disabled':''}>Check for updates</button></div><div class="context update-panel"><div><b>INSTALLED REVISION</b><code>${esc(updateStatus.current_revision||'Local checkout')}</code></div><div><b>LATEST MAIN REVISION</b><code>${esc(updateStatus.latest_revision||'Not checked')}</code></div><div><b>STATUS</b><p role="status">${esc(updateStatus.message||'Ready to check for updates.')}</p></div><button class="primary" data-action="install-update" ${busy||!updateStatus.available?'disabled':''}>Update from main</button></div><p class="hint">A local database backup is made before installation. The application restarts briefly and checks its health; failed updates restore the previous code and database. Existing sessions are revoked after an update, so you may need to sign in again. GitHub connectivity is required only when checking or installing updates.</p>${!updateStatus.available?'<p>Web updates require the update supervisor. Install this version using the Debian installer or rebuild the Docker image once to enable them.</p>':''}`;
+  const busy=['queued','checking','downloading','installing','restarting','backing-up','restoring','cleaning'].includes(updateStatus.state);
+  $('#content').innerHTML=`<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Application updates</h1><p>Install the latest published revision of the GitHub main branch.</p></div><button data-action="check-update" ${busy||!updateStatus.available?'disabled':''}>Check for updates</button></div><div class="context update-panel"><div><b>INSTALLED REVISION</b><code>${esc(updateStatus.current_revision||'Local checkout')}</code></div><div><b>LATEST MAIN REVISION</b><code>${esc(updateStatus.latest_revision||'Not checked')}</code></div><div><b>STATUS</b><p role="status">${esc(updateStatus.message||'Ready to check for updates.')}</p></div><button class="primary" data-action="install-update" ${busy||!updateStatus.available||updateStatus.backup_protocol!==1?'disabled':''}>Update from main</button></div><p class="hint">A complete application and database backup is made before installation. The application restarts briefly and checks its health; failed updates restore the previous code and database. Existing sessions are revoked after an update, so you may need to sign in again. GitHub connectivity is required only when checking or installing updates.</p>${updateStatus.available&&updateStatus.backup_protocol!==1?'<p>Install the updated supervisor using the Debian installer or Docker image to guarantee full application backups before updating.</p>':''}${!updateStatus.available?'<p>Web updates require the update supervisor. Install this version using the Debian installer or rebuild the Docker image once to enable them.</p>':''}`;
   if(busy) updateTimer=setTimeout(async()=>{try{updateStatus=await api('updates');if(view==='updates'&&session.user)render();}catch(e){updateTimer=setTimeout(()=>refresh().catch(error),2000);}},2000);
 }
+function renderBackups() {
+  $('#breadcrumb').textContent='Administrator / Backups & restore';
+  const operation=backupState.operation||{},busy=['queued','checking','downloading','installing','restarting','backing-up','restoring','cleaning'].includes(operation.state);
+  const disabled=busy||!operation.available||!backupState.supported;
+  const size=n=>n<1024*1024?(n/1024).toFixed(1)+' KiB':(n/1024/1024).toFixed(1)+' MiB';
+  $('#content').innerHTML=`<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Backups & restore</h1><p>Protect your application, accounts, and value stream data.</p></div><button class="primary" data-action="create-backup" ${disabled?'disabled':''}>Create manual backup</button></div><div class="context update-panel"><div><b>OPERATION STATUS</b><p role="status">${esc(operation.message||'Ready')}</p></div><div><b>RESTORE AN UPLOADED BACKUP</b><p>Upload a trusted .vsm-backup.zip file (up to 128 MiB). The file is validated before restoration. Backups contain application code and account data.</p><label>Backup file<input id="backupUpload" type="file" accept=".zip" ${disabled?'disabled':''}></label><button id="uploadBackup" ${disabled?'disabled':''}>Upload and restore</button></div>${!backupState.supported?'<p>Enable the updated supervisor with the Debian installer or Docker image before using backup management.</p>':''}</div><div class="section-row"><h2>Saved backups</h2><button class="danger" data-action="cleanup-backups" ${disabled?'disabled':''}>Delete selected backups</button></div><div class="table-wrap"><table><thead><tr><th>Select</th><th>Created / reason</th><th>Revision</th><th>Size</th><th>Actions</th></tr></thead><tbody>${backupState.backups.map(b=>`<tr><td><input aria-label="Select ${esc(b.id)}" type="checkbox" name="backup-select" value="${esc(b.id)}" ${disabled||b.protected?'disabled':''}></td><td>${esc(new Date(b.created_at*1000).toLocaleString())}<p>${esc(b.reason||'Backup')}</p></td><td><code>${esc(b.revision||'Legacy database backup')}</code></td><td>${size(b.size)}</td><td><a href="/api/backups/${encodeURIComponent(b.id)}/download" download>Download</a> <button class="text-button" data-action="restore-backup" data-backup="${esc(b.id)}" ${disabled||!b.restorable?'disabled':''}>Restore</button></td></tr>`).join('')||'<tr><td colspan="5">No backups yet. Create a manual backup to get started.</td></tr>'}</tbody></table></div><p class="hint">Every update and restore creates a safety backup before changing the application. Backups needed by an active recovery cannot be deleted. Download important backups to another system; local backups do not protect against disk loss. Restoring revokes sessions and restores the accounts and passwords contained in that backup.</p>`;
+  $('#uploadBackup').onclick=async()=>{
+    const file=$('#backupUpload').files[0];if(!file){error(new Error('Choose a backup file first.'));return;}
+    if(file.size>128*1024*1024){error(new Error('Backup exceeds 128 MiB.'));return;}
+    if(!confirm('Only restore a trusted application backup. This installs its application code and replaces current accounts and data. A safety backup will be created first. Continue?'))return;
+    const button=$('#uploadBackup');button.disabled=true;
+    try {
+      const response=await fetch('/api/backups/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':session.csrf_token},body:file});
+      const result=await response.json();if(!response.ok)throw new Error(result.error||'Upload failed');
+      await api('backups/restore','POST',{id:result.id});await refresh();
+    } catch(e){error(e);button.disabled=false;}
+  };
+  if(busy)updateTimer=setTimeout(()=>refresh().catch(e=>{if(session.user)updateTimer=setTimeout(()=>refresh().catch(error),2000);}),2000);
+}
+$('#backupsNav').onclick=()=>{view='backups';selected=null;refresh().catch(error);};
 $('#accountsNav').onclick=()=>{view='accounts';selected=null;refresh().catch(error);};
 $('#updatesNav').onclick=()=>{view='updates';selected=null;refresh().catch(error);};
 // Diagram positions are a personal view; they never change delivery order or process links.

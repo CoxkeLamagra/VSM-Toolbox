@@ -1,5 +1,8 @@
 """Local Value Stream Mapping server. Python 3.11+, no third-party dependencies."""
 import json
+import tempfile
+import uuid
+import shutil
 import hashlib
 import hmac
 import re
@@ -249,7 +252,22 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api/'):
             try:
                 with connect() as conn:
-                    self.require_user(conn, ('Admin',) if path == '/api/roles' or path.startswith('/api/users') or path.startswith('/api/updates') else ROLES)
+                    self.require_user(conn, ('Admin',) if path == '/api/roles' or path.startswith('/api/users') or path.startswith('/api/updates') or path.startswith('/api/backups') else ROLES)
+                    if path == '/api/backups':
+                        return self.respond(200, {'backups':updater.list_backups(), 'operation':updater.status(),
+                                                  'supported':os.environ.get('VSM_BACKUP_PROTOCOL')=='1'})
+                    if re.fullmatch(r'/api/backups/[A-Za-z0-9_.-]+/download',path):
+                        try: source=updater.backup_path(path.split('/')[3])
+                        except ValueError as exc: raise ApiError(404,str(exc)) from exc
+                        self.send_response(200)
+                        self.send_header('Content-Type','application/octet-stream')
+                        self.send_header('Content-Disposition','attachment; filename="'+source.name+'"')
+                        self.send_header('Content-Length',str(source.stat().st_size))
+                        self.send_header('Cache-Control','no-store')
+                        self.send_header('X-Content-Type-Options','nosniff')
+                        self.end_headers()
+                        with source.open('rb') as handle: shutil.copyfileobj(handle,self.wfile)
+                        return
                     if path == '/api/updates':
                         return self.respond(200, updater.status())
                     if path == '/api/roles':
@@ -287,6 +305,46 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def require_backup_engine(self):
+        if os.environ.get('VSM_BACKUP_PROTOCOL')!='1' or not updater.status()['available']:
+            raise ApiError(409,'Restart with the updated installer or Docker image to enable full application backups.')
+
+    def upload_backup(self):
+        source=None
+        try:
+            with connect() as conn:
+                self.require_user(conn,('Admin',),csrf=True)
+            self.require_backup_engine()
+            if updater.status()['state'] in updater.BUSY: raise ApiError(409,'Another maintenance operation is in progress')
+            if self.headers.get('Content-Type')!='application/octet-stream': raise ApiError(415,'Upload the backup as application/octet-stream')
+            size=int(self.headers.get('Content-Length','0'))
+            if size<=0 or size>updater.BACKUP_LIMIT: raise ApiError(413,'Upload must be between 1 byte and 128 MiB')
+            base=updater.directory()/'backups'
+            base.mkdir(parents=True,exist_ok=True)
+            os.chmod(base,0o700)
+            source=base/('.upload-'+uuid.uuid4().hex)
+            with source.open('xb') as handle:
+                os.chmod(source,0o600)
+                remaining=size
+                while remaining:
+                    chunk=self.rfile.read(min(65536,remaining))
+                    if not chunk: raise ValueError('Incomplete backup upload')
+                    handle.write(chunk)
+                    remaining-=len(chunk)
+                handle.flush();os.fsync(handle.fileno())
+            with tempfile.TemporaryDirectory(dir=base) as temporary:
+                updater.validate_backup(source,Path(temporary))
+                updater.validate_backup_database(Path(temporary)/'database.sqlite3')
+            identifier='uploaded-'+uuid.uuid4().hex+'.vsm-backup.zip'
+            os.replace(source,base/identifier)
+            source=None
+            self.respond(201,{'id':identifier})
+        except ApiError as exc: self.respond(exc.status,{'error':str(exc)})
+        except (ValueError,OSError,sqlite3.Error,updater.zipfile.BadZipFile,KeyError,TypeError,RecursionError) as exc:
+            self.respond(400,{'error':'Invalid backup upload: '+str(exc)})
+        finally:
+            if source: source.unlink(missing_ok=True)
+
     def mutate(self, method):
         # Browser writes must originate from this host; no cross-origin API access.
         origin = self.headers.get('Origin')
@@ -294,6 +352,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(403, {'error': 'Cross-origin writes are disabled'})
         path = urlparse(self.path).path
         parts = path.strip('/').split('/')
+        if path=='/api/backups/upload' and method=='POST': return self.upload_backup()
         if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
             return self.respond(415, {'error': 'Content-Type must be application/json'})
         try:
@@ -306,10 +365,28 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 # Serialize bootstrap and account changes, including the last-Admin invariant.
                 conn.execute('BEGIN IMMEDIATE')
-                if updater.status()['state'] in ('installing', 'restarting'):
+                if updater.status()['state'] in ('installing', 'restarting', 'backing-up', 'restoring'):
                     raise ApiError(503, 'An update is being installed. Please wait for the application to restart.')
-                if path in ('/api/updates/check', '/api/updates/install') and method == 'POST':
+                if path in ('/api/backups/create','/api/backups/restore','/api/backups/cleanup') and method=='POST':
+                    self.require_user(conn,('Admin',),csrf=True)
+                    self.require_backup_engine()
+                    action=path.rsplit('/',1)[1]
+                    if action=='create':
+                        if data: raise ValueError('Backup creation accepts an empty object')
+                        payload={}; action='backup'
+                    elif action=='restore':
+                        if set(data)!={'id'}: raise ValueError('A backup identifier is required')
+                        updater.backup_path(data['id']);payload={'id':data['id']}
+                    else:
+                        if set(data)!={'ids'} or not isinstance(data['ids'],list) or not data['ids']: raise ValueError('Select backups to remove')
+                        for identifier in data['ids']: updater.backup_path(identifier)
+                        payload={'ids':data['ids']}
+                    try: result=updater.request(action,**payload)
+                    except RuntimeError as exc: raise ApiError(409,str(exc)) from exc
+                    status,cookie=202,None
+                elif path in ('/api/updates/check', '/api/updates/install') and method == 'POST':
                     self.require_user(conn, ('Admin',), csrf=True)
+                    if path.endswith('/install'): self.require_backup_engine()
                     if data:
                         raise ValueError('Update requests do not accept configuration or source overrides')
                     try:

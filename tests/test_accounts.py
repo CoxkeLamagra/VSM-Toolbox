@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import os
 import time
 from unittest import mock
 import app
@@ -109,7 +110,7 @@ class AccountTest(test_api.ApiTest):
 
     def test_update_admin_only_and_no_source_overrides(self):
         self.register()
-        with mock.patch('updater.status',return_value={'available':True,'state':'idle'}), mock.patch('updater.request',return_value={'queued':True}) as queue:
+        with mock.patch.dict(os.environ,{'VSM_BACKUP_PROTOCOL':'1'}), mock.patch('updater.status',return_value={'available':True,'state':'idle'}), mock.patch('updater.request',return_value={'queued':True}) as queue:
             self.assertEqual(self.request('POST','/api/updates/install',{'url':'https://evil.example'})[0],400)
             self.assertEqual(self.request('POST','/api/updates/install',{})[0],202)
             queue.assert_called_once_with('install')
