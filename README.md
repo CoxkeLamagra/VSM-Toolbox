@@ -186,7 +186,7 @@ Work/wait times must be finite nonnegative numbers in minutes. Flow efficiency i
 
 Open **Administrator → Backups & restore**. Only Admin accounts can list or download backups, create manual backups, upload, restore, or delete backup files. All write actions require the session's CSRF token. Manual backup and restore work offline, without GitHub access.
 
-- **Create manual backup** pauses the web process briefly and produces a `.vsm-backup.zip` containing the six application runtime files, the SQLite database (including local accounts), revision metadata, and checksums. The application restarts after capture.
+- **Create manual backup** keeps the web server running and uses SQLite’s online backup API to produce a `.vsm-backup.zip` containing the six application runtime files, the SQLite database (including local accounts), revision metadata, and checksums. Writes pause during capture; reads remain available.
 - **Download** saves a server backup to your computer. Keep copies on another system to protect against disk failure.
 - **Restore** beside a saved backup restores that application's code, accounts, and database. The selected archive is validated before the application stops. A full **pre-restore safety backup** captures the current state before any replacement; failed startup restores that safety snapshot.
 - **Upload and restore** accepts a trusted `.vsm-backup.zip` (maximum 128 MiB compressed and unpacked). Archive paths, regular-file types, exact file membership, checksums, Python syntax, runtime compatibility, SQLite integrity/schema and the presence of an Admin account are checked. Arbitrary archive paths and symlinks are never extracted. Invalid uploads are rejected without changing the running workspace.
@@ -213,7 +213,7 @@ Additional API routes:
 
 Queued operations return 202. Concurrent maintenance requests are refused, and mutations pause during capture, installation and restoration. Uploaded archives can be retained even if the subsequent restore request is cancelled or fails; they remain visible for later selection or cleanup.
 
-Browser integration checks for the complete backup workflow run with `node tests/backups.cjs` when Playwright/Chromium are installed (same `VSM_CHROMIUM` and `PYTHON` options as the diagram test). They start their own supervisor, database and backup storage, leaving the development workspace unchanged.
+Browser integration checks for the complete backup workflow run with `node tests/backups.cjs` when Playwright/Chromium are installed (same `VSM_CHROMIUM` and `PYTHON` options as the diagram test). They start their own supervisor, database and backup storage, leaving the development workspace unchanged. Run `node tests/maintenance.cjs` to check HTML gateway error handling and repeated restart polling without browser dependencies.
 
 ### Advanced database-only backups
 

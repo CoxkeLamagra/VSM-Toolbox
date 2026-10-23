@@ -4,9 +4,31 @@ let state, view = 'streams', selected = null, saveForm, session = {}, accounts =
 let backupState = {backups:[],operation:{}};
 let streamMode = 'diagram', diagramController = null;
 const canEdit = () => ['Admin','Editor'].includes(session.user?.role);
+async function readResponse(response) {
+  let body;
+  try { body = JSON.parse(await response.text()); }
+  catch { throw new Error(`Server returned an unexpected response (HTTP ${response.status}). The application may be restarting or a proxy may be unavailable. Try again shortly.`); }
+  return body;
+}
+function pollMaintenance() {
+  const pollingView = view;
+  clearTimeout(updateTimer);
+  updateTimer = setTimeout(async () => {
+    if (view !== pollingView || !session.user) return;
+    try { await refresh(); }
+    catch (e) {
+      if (view === pollingView && session.user) { error(e); pollMaintenance(); }
+    }
+  }, 2000);
+}
+async function refreshMaintenance() {
+  // Poll even if this first read overlaps an update or restore restart.
+  pollMaintenance();
+  try { await refresh(); } catch (e) { error(e); }
+}
 async function api(path, method = 'GET', data) {
   const r = await fetch('/api/' + path, {method, headers: {'Content-Type':'application/json', ...(session.csrf_token ? {'X-CSRF-Token':session.csrf_token} : {})}, body: data === undefined ? undefined : JSON.stringify(data)});
-  const body = await r.json();
+  const body = await readResponse(r);
   if (!r.ok) {
     if (r.status === 401 && session.user) { session = {}; state = null; $('#editor').close(); render(); }
     throw new Error(body.error || 'Request failed');
@@ -93,10 +115,10 @@ $('#content').addEventListener('click', async e=> {
       if(!confirm('Remove this account? Its sessions will be revoked.'))return;
       await api('users/'+id,'DELETE'); await refresh(); return;
     }
-    if(el.dataset.action==='create-backup') {await api('backups/create','POST',{});await refresh();return;}
+    if(el.dataset.action==='create-backup') {await api('backups/create','POST',{});await refreshMaintenance();return;}
     if(el.dataset.action==='restore-backup') {
       if(!confirm('Restore application code, accounts and data from this trusted backup? Current data will be replaced. A safety backup is created first, and you must sign in again using an account from the backup.'))return;
-      await api('backups/restore','POST',{id:el.dataset.backup});await refresh();return;
+      await api('backups/restore','POST',{id:el.dataset.backup});await refreshMaintenance();return;
     }
     if(el.dataset.action==='cleanup-backups') {
       const ids=[...document.querySelectorAll('[name="backup-select"]:checked')].map(el=>el.value);
@@ -107,7 +129,7 @@ $('#content').addEventListener('click', async e=> {
     if(el.dataset.action==='check-update' || el.dataset.action==='install-update') {
       if(el.dataset.action==='install-update' && !confirm('Update to the latest GitHub main revision? A database backup will be made and the application will briefly restart.'))return;
       await api('updates/'+(el.dataset.action==='check-update'?'check':'install'),'POST',{});
-      await refresh();return;
+      await refreshMaintenance();return;
     }
     switch(el.dataset.action) {
       case 'diagram-view':streamMode='diagram';return render();
@@ -188,7 +210,7 @@ function renderUpdates() {
   $('#breadcrumb').textContent='Administrator / Updates';
   const busy=['queued','checking','downloading','installing','restarting','backing-up','restoring','cleaning'].includes(updateStatus.state);
   $('#content').innerHTML=`<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Application updates</h1><p>Install the latest published revision of the GitHub main branch.</p></div><button data-action="check-update" ${busy||!updateStatus.available?'disabled':''}>Check for updates</button></div><div class="context update-panel"><div><b>INSTALLED REVISION</b><code>${esc(updateStatus.current_revision||'Local checkout')}</code></div><div><b>LATEST MAIN REVISION</b><code>${esc(updateStatus.latest_revision||'Not checked')}</code></div><div><b>STATUS</b><p role="status">${esc(updateStatus.message||'Ready to check for updates.')}</p></div><button class="primary" data-action="install-update" ${busy||!updateStatus.available||updateStatus.backup_protocol!==1?'disabled':''}>Update from main</button></div><p class="hint">A complete application and database backup is made before installation. The application restarts briefly and checks its health; failed updates restore the previous code and database. Existing sessions are revoked after an update, so you may need to sign in again. GitHub connectivity is required only when checking or installing updates.</p>${updateStatus.available&&updateStatus.backup_protocol!==1?'<p>Install the updated supervisor using the Debian installer or Docker image to guarantee full application backups before updating.</p>':''}${!updateStatus.available?'<p>Web updates require the update supervisor. Install this version using the Debian installer or rebuild the Docker image once to enable them.</p>':''}`;
-  if(busy) updateTimer=setTimeout(async()=>{try{updateStatus=await api('updates');if(view==='updates'&&session.user)render();}catch(e){updateTimer=setTimeout(()=>refresh().catch(error),2000);}},2000);
+  if(busy) pollMaintenance();
 }
 function renderBackups() {
   $('#breadcrumb').textContent='Administrator / Backups & restore';
@@ -203,11 +225,11 @@ function renderBackups() {
     const button=$('#uploadBackup');button.disabled=true;
     try {
       const response=await fetch('/api/backups/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':session.csrf_token},body:file});
-      const result=await response.json();if(!response.ok)throw new Error(result.error||'Upload failed');
-      await api('backups/restore','POST',{id:result.id});await refresh();
+      const result=await readResponse(response);if(!response.ok)throw new Error(result.error||'Upload failed');
+      await api('backups/restore','POST',{id:result.id});await refreshMaintenance();
     } catch(e){error(e);button.disabled=false;}
   };
-  if(busy)updateTimer=setTimeout(()=>refresh().catch(e=>{if(session.user)updateTimer=setTimeout(()=>refresh().catch(error),2000);}),2000);
+  if(busy) pollMaintenance();
 }
 $('#backupsNav').onclick=()=>{view='backups';selected=null;refresh().catch(error);};
 $('#accountsNav').onclick=()=>{view='accounts';selected=null;refresh().catch(error);};

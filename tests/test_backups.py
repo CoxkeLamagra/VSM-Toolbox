@@ -37,6 +37,16 @@ class BackupTest(test_updater.UpdaterTest):
             for name,content in files.items(): archive.writestr(name,content)
         return target
 
+    def test_manual_backup_keeps_web_process_running(self):
+        child = self.supervisor.child
+        with mock.patch.object(self.supervisor, 'stop') as stop, mock.patch.object(self.supervisor, 'start') as start:
+            self.manual()
+        stop.assert_not_called()
+        start.assert_not_called()
+        self.assertIs(self.supervisor.child, child)
+        self.assertIsNone(child.poll())
+        self.assertTrue(self.supervisor.healthy(timeout=10))
+
     def test_manual_backup_contains_code_database_and_checksums(self):
         source=self.manual()
         metadata=updater.validate_backup(source)

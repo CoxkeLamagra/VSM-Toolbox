@@ -478,12 +478,10 @@ class Supervisor:
                 return
             if action=='backup':
                 self.report('backing-up','Creating an application and database backup…')
-                self.stop()
-                try:
-                    safety=create_backup(self.active,self.db,'manual')
-                finally:
-                    self.start()
-                if not self.healthy(): raise RuntimeError('Application did not restart after backup')
+                # SQLite's online backup API captures a consistent snapshot while
+                # the web process remains available. Runtime code is immutable;
+                # the supervisor serializes maintenance operations.
+                safety=create_backup(self.active,self.db,'manual')
                 self.report('succeeded','Application and database backup created.',backup=str(safety))
                 return
             if action!='restore': raise ValueError('Unknown maintenance operation')
