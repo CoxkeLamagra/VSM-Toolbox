@@ -258,3 +258,8 @@ Admins and Editors can select existing tags in the create/edit forms for value s
 The catalog, colors, categories, and assignments stay in SQLite and are included in backups. Existing workspaces gain empty tag tables automatically. `GET /api/tags` and `GET /api/tag_categories` require sign-in; their POST/PUT/DELETE operations require Admin and CSRF. Tags accept `name`, `color` (`#RRGGBB`), and optional `category_id` (integer or null). Stream, step, and process POST/PUT requests accept `tag_ids` as an array of existing integer tag IDs. Supplying an empty array clears assignments; omitting it preserves them. The response includes `tag_ids`. Content and assignments save in one transaction.
 
 Tag tests run with the Python regression suite and `node tests/tags.cjs` (using the existing Playwright/Chromium environment options). They cover catalog permissions, all assignment types, validation, cleanup, color updates, and backup restoration.
+
+
+### Architecture and development
+
+See [Architecture and refactor notes](docs/architecture.md) for the current responsibilities, resource and page registries, transaction boundaries, deployment compatibility constraints, and verification commands.

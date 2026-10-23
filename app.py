@@ -1,23 +1,27 @@
 """Local Value Stream Mapping server. Python 3.11+, no third-party dependencies."""
-import json
+
 import base64
 import binascii
-import tempfile
-import uuid
-import shutil
 import hashlib
 import hmac
+import json
+import math
+import os
 import re
 import secrets
-import time
-import updater
-from http.cookies import SimpleCookie, CookieError
-import os
+import shutil
 import sqlite3
+import tempfile
+import time
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
+from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+import updater
 
 UPDATE_PROTOCOL = 1
 ROOT = Path(__file__).resolve().parent
@@ -26,6 +30,7 @@ DB = Path(os.environ.get('VSM_DATABASE', ROOT / 'data' / 'vsm.sqlite3'))
 
 @contextmanager
 def connect():
+    """Own one connection, commit on success, and roll back on an exception."""
     DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -38,8 +43,10 @@ def connect():
 
 
 def initialize():
+    """Create missing tables and apply additive migrations without resetting data."""
     with connect() as conn:
-        conn.executescript('''
+        conn.executescript(
+            '''
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -71,10 +78,13 @@ def initialize():
           step_id INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
           process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
           PRIMARY KEY(step_id, process_id));
-        ''')
+        '''
+        )
 
         for entity in ('streams', 'steps', 'processes'):
-            conn.execute(f'CREATE TABLE IF NOT EXISTS {entity}_tags (entity_id INTEGER NOT NULL REFERENCES {entity}(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(entity_id,tag_id))')
+            conn.execute(
+                f'CREATE TABLE IF NOT EXISTS {entity}_tags (entity_id INTEGER NOT NULL REFERENCES {entity}(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(entity_id,tag_id))'
+            )
 
         # Existing workspaces gain an optional customer request without losing data.
         if 'voc' not in {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}:
@@ -82,8 +92,13 @@ def initialize():
 
 
 BRANDING_DEFAULTS = {
-    'name': 'VSM Toolbox', 'tagline': 'Value streams. Connected.',
-    'primary': '#e6404d', 'sidebar': '#151d44', 'background': '#f5f6fa', 'logo': ''}
+    'name': 'VSM Toolbox',
+    'tagline': 'Value streams. Connected.',
+    'primary': '#e6404d',
+    'sidebar': '#151d44',
+    'background': '#f5f6fa',
+    'logo': '',
+}
 
 
 def branding(conn):
@@ -119,17 +134,10 @@ def validate_branding(data):
 
 
 def foreground(color):
-    values = [int(color[i:i+2], 16)/255 for i in (1, 3, 5)]
-    linear = [v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4 for v in values]
-    luminance = sum(v*w for v, w in zip(linear, (.2126, .7152, .0722)))
-    return '#ffffff' if luminance < .179 else '#111827'
-
-
-def tagged_row(conn, table, row):
-    result = dict(row)
-    if table in ('streams','steps','processes'):
-        result['tag_ids'] = [r[0] for r in conn.execute(f'SELECT tag_id FROM {table}_tags WHERE entity_id=? ORDER BY tag_id', (row['id'],))]
-    return result
+    values = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in values]
+    luminance = sum(v * w for v, w in zip(linear, (0.2126, 0.7152, 0.0722)))
+    return '#ffffff' if luminance < 0.179 else '#111827'
 
 
 ROLES = ('Admin', 'Editor', 'Viewer')
@@ -145,13 +153,17 @@ class ApiError(Exception):
 
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), PASSWORD_ITERATIONS).hex()
+    digest = hashlib.pbkdf2_hmac(
+        'sha256', password.encode(), bytes.fromhex(salt), PASSWORD_ITERATIONS
+    ).hex()
     return f'pbkdf2_sha256${PASSWORD_ITERATIONS}${salt}${digest}'
 
 
 def password_matches(password, stored):
     _, iterations, salt, expected = stored.split('$')
-    actual = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), int(iterations)).hex()
+    actual = hashlib.pbkdf2_hmac(
+        'sha256', password.encode(), bytes.fromhex(salt), int(iterations)
+    ).hex()
     return hmac.compare_digest(actual, expected)
 
 
@@ -160,10 +172,14 @@ def validate_account(data, creating=False):
         raise ValueError('Supply only username, password and role')
     if creating and not {'username', 'password'} <= set(data):
         raise ValueError('Username and password are required')
-    if 'username' in data and (not isinstance(data['username'], str) or
-                              not re.fullmatch(r'[A-Za-z0-9_.-]{3,64}', data['username'])):
+    if 'username' in data and (
+        not isinstance(data['username'], str)
+        or not re.fullmatch(r'[A-Za-z0-9_.-]{3,64}', data['username'])
+    ):
         raise ValueError('Username must be 3–64 letters, numbers, dots, underscores or hyphens')
-    if 'password' in data and (not isinstance(data['password'], str) or not 12 <= len(data['password']) <= 128):
+    if 'password' in data and (
+        not isinstance(data['password'], str) or not 12 <= len(data['password']) <= 128
+    ):
         raise ValueError('Password must be 12–128 characters')
     if 'role' in data and data['role'] not in ROLES:
         raise ValueError('Role must be Admin, Editor or Viewer')
@@ -173,29 +189,234 @@ def public_user(row):
     return {key: row[key] for key in ('id', 'username', 'role')}
 
 
-FIELDS = {
-    'tags': {'name':str, 'color':str, 'category_id':int},
-    'tag_categories': {'name':str},
-    'streams': {'name': str, 'customer': str, 'outcome': str, 'description': str, 'voc': str},
-    'steps': {'name': str, 'stream_id': int, 'owner': str, 'position': int,
-              'work_minutes': float, 'wait_minutes': float},
-    'processes': {'name': str, 'owner': str, 'description': str, 'procedure': str},
+@dataclass(frozen=True)
+class ResourceSpec:
+    fields: dict[str, type]
+    write_roles: tuple[str, ...] = ('Admin', 'Editor')
+    tagged: bool = False
+    order_by: str = 'id'
+
+
+RESOURCES = {
+    'tags': ResourceSpec({'name': str, 'color': str, 'category_id': int}, ('Admin',)),
+    'tag_categories': ResourceSpec({'name': str}, ('Admin',)),
+    'streams': ResourceSpec(
+        {'name': str, 'customer': str, 'outcome': str, 'description': str, 'voc': str}, tagged=True
+    ),
+    'steps': ResourceSpec(
+        {
+            'name': str,
+            'stream_id': int,
+            'owner': str,
+            'position': int,
+            'work_minutes': float,
+            'wait_minutes': float,
+        },
+        tagged=True,
+        order_by='position, id',
+    ),
+    'processes': ResourceSpec(
+        {'name': str, 'owner': str, 'description': str, 'procedure': str}, tagged=True
+    ),
 }
 
 
+def integer_ids(value, field):
+    if not isinstance(value, list) or any(type(ident) is not int for ident in value):
+        raise ValueError(field + ' must be an array of integer IDs')
+    return value
+
+
+ADMIN_READ_PATHS = ('/api/roles', '/api/users', '/api/updates', '/api/backups')
+STATIC_ASSETS = {
+    '/': ('index.html', 'text/html'),
+    '/app.js': ('app.js', 'text/javascript'),
+    '/style.css': ('style.css', 'text/css'),
+}
+CONTENT_SECURITY_POLICY = "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'"
+WRITES_PAUSED = ('installing', 'restarting', 'backing-up', 'restoring')
+
+
+def branding_stylesheet(theme, tag_colors):
+    """Generate the one local stylesheet used by branding and colored tags."""
+    css = ':root{' + ';'.join(
+        f'--{key}:{theme[key]}' for key in ('primary', 'sidebar', 'background')
+    )
+    css += (
+        f";--on-primary:{foreground(theme['primary'])};--on-sidebar:{foreground(theme['sidebar'])}"
+        + '}'
+    )
+    for tag in tag_colors:
+        color = tag['color'] if re.fullmatch(r'#[0-9a-fA-F]{6}', tag['color']) else '#e6404d'
+        css += f".tag-color-{tag['id']}{{--tag-color:{color};--tag-ink:{foreground(color)}}}"
+    return css.encode()
+
+
+class ContentRepository:
+    """Local content and tag operations; the caller owns the transaction.
+
+    Resource names and SQL column names always come from RESOURCES. HTTP,
+    cookies, and permission enforcement belong to Handler instead.
+    """
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def serialize(self, table, rows, ident=None):
+        records = [dict(row) for row in rows]
+        if not records or not RESOURCES[table].tagged:
+            return records
+        assignments = {}
+        query = f'SELECT entity_id, tag_id FROM {table}_tags'
+        parameters = ()
+        if ident is not None:
+            query += ' WHERE entity_id=?'
+            parameters = (ident,)
+        for entity_id, tag_id in self.conn.execute(query + ' ORDER BY tag_id', parameters):
+            assignments.setdefault(entity_id, []).append(tag_id)
+        for record in records:
+            record['tag_ids'] = assignments.get(record['id'], [])
+        return records
+
+    def list(self, table, ordered=False):
+        order = RESOURCES[table].order_by if ordered else 'id'
+        return self.serialize(table, self.conn.execute(f'SELECT * FROM {table} ORDER BY {order}'))
+
+    def get(self, table, ident):
+        row = self.conn.execute(f'SELECT * FROM {table} WHERE id=?', (ident,)).fetchone()
+        if row is None:
+            raise ApiError(404, 'Not found')
+        return self.serialize(table, [row], ident)[0]
+
+    def snapshot(self):
+        data = {table: self.list(table, ordered=True) for table in RESOURCES}
+        data['step_processes'] = [
+            dict(row)
+            for row in self.conn.execute(
+                'SELECT * FROM step_processes ORDER BY step_id, process_id'
+            )
+        ]
+        return data
+
+    def validate(self, table, method, values):
+        spec = RESOURCES[table]
+        tag_ids = None
+        if spec.tagged and 'tag_ids' in values:
+            tag_ids = integer_ids(values.pop('tag_ids'), 'tag_ids')
+            existing = {row[0] for row in self.conn.execute('SELECT id FROM tags')}
+            if not set(tag_ids) <= existing:
+                raise ValueError('Unknown tag')
+        if (
+            table == 'tags'
+            and 'color' in values
+            and (
+                not isinstance(values['color'], str)
+                or not re.fullmatch(r'#[0-9a-fA-F]{6}', values['color'])
+            )
+        ):
+            raise ValueError('Tag color must be a six-digit hex color')
+        if table in ('tags', 'tag_categories') and 'name' in values:
+            name = values['name']
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+                raise ValueError('Name must contain 1–80 characters')
+            values['name'] = name.strip()
+        if set(values) - set(spec.fields):
+            raise ValueError('Unknown fields')
+        if method == 'POST' and (
+            'name' not in values or table == 'steps' and 'stream_id' not in values
+        ):
+            raise ValueError('name and, for steps, stream_id are required')
+        for key, value in values.items():
+            kind = spec.fields[key]
+            if kind is str and (not isinstance(value, str) or len(value) > 20000):
+                raise ValueError(key + ' must be text of at most 20000 characters')
+            if table == 'tags' and key == 'category_id' and value is None:
+                continue
+            if kind is int and type(value) is not int:
+                raise ValueError(key + ' must be an integer')
+            if kind is float and (
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+            ):
+                raise ValueError(key + ' must be a finite nonnegative number')
+        if 'name' in values and not values['name'].strip():
+            raise ValueError('Name cannot be empty')
+        if not values and tag_ids is None:
+            raise ValueError('No fields supplied')
+        return tag_ids
+
+    def replace_process_links(self, step_id, data):
+        if not self.conn.execute('SELECT id FROM steps WHERE id=?', (step_id,)).fetchone():
+            raise ApiError(404, 'Step not found')
+        ids = integer_ids(data.get('process_ids'), 'process_ids')
+        self.conn.execute('DELETE FROM step_processes WHERE step_id=?', (step_id,))
+        self.conn.executemany(
+            'INSERT INTO step_processes VALUES (?,?)', [(step_id, ident) for ident in set(ids)]
+        )
+        return {'step_id': step_id, 'process_ids': ids}
+
+    def mutate(self, parts, method, data):
+        if (
+            len(parts) == 4
+            and parts[:2] == ['api', 'steps']
+            and parts[2].isdigit()
+            and parts[3] == 'processes'
+            and method == 'PUT'
+        ):
+            return self.replace_process_links(int(parts[2]), data)
+        if len(parts) not in (2, 3) or parts[0] != 'api' or parts[1] not in RESOURCES:
+            raise ApiError(404, 'Not found')
+        table = parts[1]
+        if len(parts) == 3 and not parts[2].isdigit():
+            raise ApiError(404, 'Not found')
+        ident = int(parts[2]) if len(parts) == 3 else None
+        if (method == 'POST') != (ident is None):
+            raise ApiError(405, 'Unsupported method for this resource')
+        if ident is not None:
+            self.get(table, ident)
+        if method == 'DELETE':
+            self.conn.execute(f'DELETE FROM {table} WHERE id=?', (ident,))
+            return {'deleted': ident}
+        values = dict(data)
+        tag_ids = self.validate(table, method, values)
+        if method == 'POST':
+            columns = ','.join(values)
+            placeholders = ','.join('?' for _ in values)
+            cursor = self.conn.execute(
+                f'INSERT INTO {table} ({columns}) VALUES ({placeholders})', list(values.values())
+            )
+            ident = cursor.lastrowid
+        elif values:
+            assignments = ','.join(key + '=?' for key in values)
+            self.conn.execute(
+                f'UPDATE {table} SET {assignments} WHERE id=?', [*values.values(), ident]
+            )
+        if tag_ids is not None:
+            self.conn.execute(f'DELETE FROM {table}_tags WHERE entity_id=?', (ident,))
+            self.conn.executemany(
+                f'INSERT INTO {table}_tags VALUES (?,?)',
+                [(ident, tag_id) for tag_id in set(tag_ids)],
+            )
+        return self.get(table, ident)
+
+
 class Handler(BaseHTTPRequestHandler):
+    def response_headers(self, status, length, content_type, headers=None):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(length))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+
     def respond(self, status, data, cookie=None):
         payload = json.dumps(data, allow_nan=False).encode()
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(payload)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
+        headers = {'Cache-Control': 'no-store'}
         if cookie:
-            self.send_header('Set-Cookie', cookie)
+            headers['Set-Cookie'] = cookie
         if status == 429:
-            self.send_header('Retry-After', '300')
-        self.end_headers()
+            headers['Retry-After'] = '300'
+        self.response_headers(status, len(payload), 'application/json; charset=utf-8', headers)
         self.wfile.write(payload)
 
     def session_token(self):
@@ -208,9 +429,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def session(self, conn):
         token = hashlib.sha256(self.session_token().encode()).hexdigest()
-        return conn.execute('SELECT users.id, username, role, csrf_token FROM sessions '
-                            'JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?',
-                            (token, time.time())).fetchone()
+        return conn.execute(
+            'SELECT users.id, username, role, csrf_token FROM sessions '
+            'JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?',
+            (token, time.time()),
+        ).fetchone()
 
     def require_user(self, conn, roles=ROLES, csrf=False):
         user = self.session(conn)
@@ -218,7 +441,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(401, 'Sign in to continue')
         if user['role'] not in roles:
             raise ApiError(403, 'Your role does not allow this action')
-        if csrf and not hmac.compare_digest(self.headers.get('X-CSRF-Token', '').encode(), user['csrf_token'].encode()):
+        if csrf and not hmac.compare_digest(
+            self.headers.get('X-CSRF-Token', '').encode(), user['csrf_token'].encode()
+        ):
             raise ApiError(403, 'Missing or invalid CSRF token')
         return user
 
@@ -229,48 +454,87 @@ class Handler(BaseHTTPRequestHandler):
     def create_session(self, conn, user):
         token = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(32)
-        conn.execute('DELETE FROM sessions WHERE expires_at<=? OR token_hash=?',
-                     (time.time(), hashlib.sha256(self.session_token().encode()).hexdigest()))
-        conn.execute('INSERT INTO sessions VALUES (?,?,?,?)',
-                     (hashlib.sha256(token.encode()).hexdigest(), user['id'], csrf, time.time()+SESSION_SECONDS))
-        return {'user': public_user(user), 'csrf_token': csrf, 'setup_required': False}, self.session_cookie(token)
+        conn.execute(
+            'DELETE FROM sessions WHERE expires_at<=? OR token_hash=?',
+            (time.time(), hashlib.sha256(self.session_token().encode()).hexdigest()),
+        )
+        conn.execute(
+            'INSERT INTO sessions VALUES (?,?,?,?)',
+            (
+                hashlib.sha256(token.encode()).hexdigest(),
+                user['id'],
+                csrf,
+                time.time() + SESSION_SECONDS,
+            ),
+        )
+        return {
+            'user': public_user(user),
+            'csrf_token': csrf,
+            'setup_required': False,
+        }, self.session_cookie(token)
 
     def auth_mutation(self, conn, path, method, data):
         if path == '/api/auth/register' and method == 'POST':
             if conn.execute('SELECT 1 FROM users LIMIT 1').fetchone():
-                raise ApiError(403, 'Registration is closed. An Admin must create additional accounts.')
+                raise ApiError(
+                    403, 'Registration is closed. An Admin must create additional accounts.'
+                )
             if set(data) != {'username', 'password'}:
                 raise ValueError('Username and password are required')
             validate_account(data, creating=True)
-            cursor = conn.execute('INSERT INTO users (username,password_hash,role) VALUES (?,?,?)',
-                                  (data['username'], password_hash(data['password']), 'Admin'))
+            cursor = conn.execute(
+                'INSERT INTO users (username,password_hash,role) VALUES (?,?,?)',
+                (data['username'], password_hash(data['password']), 'Admin'),
+            )
             user = conn.execute('SELECT * FROM users WHERE id=?', (cursor.lastrowid,)).fetchone()
             result, cookie = self.create_session(conn, user)
             return 201, result, cookie
         if path == '/api/auth/login' and method == 'POST':
-            if set(data) != {'username', 'password'} or not isinstance(data.get('username'), str) or not isinstance(data.get('password'), str):
+            if (
+                set(data) != {'username', 'password'}
+                or not isinstance(data.get('username'), str)
+                or not isinstance(data.get('password'), str)
+            ):
                 raise ValueError('Username and password are required')
             if len(data['username']) > 64 or len(data['password']) > 128:
                 raise ValueError('Invalid credentials')
             now = time.time()
             address = self.client_address[0]
-            conn.execute('DELETE FROM login_attempts WHERE started_at<=?', (now-300,))
-            attempt = conn.execute('SELECT failures FROM login_attempts WHERE address=?', (address,)).fetchone()
+            conn.execute('DELETE FROM login_attempts WHERE started_at<=?', (now - 300,))
+            attempt = conn.execute(
+                'SELECT failures FROM login_attempts WHERE address=?', (address,)
+            ).fetchone()
             if attempt and attempt['failures'] >= 10:
-                return 429, {'error': 'Too many failed sign-in attempts. Try again in five minutes.'}, None
-            user = conn.execute('SELECT * FROM users WHERE username=?', (data['username'],)).fetchone()
+                return (
+                    429,
+                    {'error': 'Too many failed sign-in attempts. Try again in five minutes.'},
+                    None,
+                )
+            user = conn.execute(
+                'SELECT * FROM users WHERE username=?', (data['username'],)
+            ).fetchone()
             # The dummy hash keeps unknown usernames on the same password-check path.
-            stored = user['password_hash'] if user else f'pbkdf2_sha256${PASSWORD_ITERATIONS}$' + '00'*16 + '$' + '00'*32
+            stored = (
+                user['password_hash']
+                if user
+                else f'pbkdf2_sha256${PASSWORD_ITERATIONS}$' + '00' * 16 + '$' + '00' * 32
+            )
             valid = password_matches(data['password'], stored)
             if not user or not valid:
-                conn.execute('INSERT INTO login_attempts VALUES (?,1,?) ON CONFLICT(address) DO UPDATE SET failures=failures+1', (address, now))
+                conn.execute(
+                    'INSERT INTO login_attempts VALUES (?,1,?) ON CONFLICT(address) DO UPDATE SET failures=failures+1',
+                    (address, now),
+                )
                 return 401, {'error': 'Invalid username or password'}, None
             conn.execute('DELETE FROM login_attempts WHERE address=?', (address,))
             result, cookie = self.create_session(conn, user)
             return 200, result, cookie
         if path == '/api/auth/logout' and method == 'POST':
             self.require_user(conn, csrf=True)
-            conn.execute('DELETE FROM sessions WHERE token_hash=?', (hashlib.sha256(self.session_token().encode()).hexdigest(),))
+            conn.execute(
+                'DELETE FROM sessions WHERE token_hash=?',
+                (hashlib.sha256(self.session_token().encode()).hexdigest(),),
+            )
             return 200, {'signed_out': True}, self.session_cookie('', expires=True)
         raise ApiError(404, 'Not found')
 
@@ -281,14 +545,28 @@ class Handler(BaseHTTPRequestHandler):
         ident = int(parts[2]) if len(parts) == 3 else None
         if (method == 'POST') != (ident is None):
             raise ApiError(405, 'Unsupported method for this resource')
-        current = conn.execute('SELECT * FROM users WHERE id=?', (ident,)).fetchone() if ident is not None else None
+        current = (
+            conn.execute('SELECT * FROM users WHERE id=?', (ident,)).fetchone()
+            if ident is not None
+            else None
+        )
         if ident is not None and not current:
             raise ApiError(404, 'Account not found')
         if method != 'DELETE':
             validate_account(data, creating=method == 'POST')
-            if 'username' in data and conn.execute('SELECT id FROM users WHERE username=? AND id!=?', (data['username'], ident or -1)).fetchone():
+            if (
+                'username' in data
+                and conn.execute(
+                    'SELECT id FROM users WHERE username=? AND id!=?',
+                    (data['username'], ident or -1),
+                ).fetchone()
+            ):
                 raise ApiError(409, 'Username is already in use')
-        if current and current['role'] == 'Admin' and (method == 'DELETE' or data.get('role', 'Admin') != 'Admin'):
+        if (
+            current
+            and current['role'] == 'Admin'
+            and (method == 'DELETE' or data.get('role', 'Admin') != 'Admin')
+        ):
             if conn.execute("SELECT count(*) FROM users WHERE role='Admin'").fetchone()[0] <= 1:
                 raise ApiError(409, 'The last Admin cannot be removed or demoted')
         if method == 'DELETE':
@@ -299,150 +577,244 @@ class Handler(BaseHTTPRequestHandler):
             values['password_hash'] = password_hash(values.pop('password'))
         if method == 'POST':
             values.setdefault('role', 'Viewer')
-            cursor = conn.execute(f'INSERT INTO users ({",".join(values)}) VALUES ({",".join("?" for _ in values)})', list(values.values()))
+            cursor = conn.execute(
+                f'INSERT INTO users ({",".join(values)}) VALUES ({",".join("?" for _ in values)})',
+                list(values.values()),
+            )
             ident = cursor.lastrowid
         else:
-            conn.execute(f'UPDATE users SET {",".join(k+"=?" for k in values)} WHERE id=?', [*values.values(), ident])
+            conn.execute(
+                f'UPDATE users SET {",".join(k+"=?" for k in values)} WHERE id=?',
+                [*values.values(), ident],
+            )
             conn.execute('DELETE FROM sessions WHERE user_id=?', (ident,))
         return public_user(conn.execute('SELECT * FROM users WHERE id=?', (ident,)).fetchone())
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path == '/api/health':
+        if not path.startswith('/api/') and path != '/branding.css':
+            return self.serve_asset(path)
+        try:
+            download = re.fullmatch(r'/api/backups/([A-Za-z0-9_.-]+)/download', path)
             with connect() as conn:
-                conn.execute('SELECT 1').fetchone()
-            return self.respond(200, {'status': 'ok', 'update_protocol': UPDATE_PROTOCOL, 'revision': os.environ.get('VSM_REVISION', 'local')})
-        if path in ('/api/branding', '/branding.css'):
-            with connect() as conn:
-                theme = branding(conn)
-                tag_colors = list(conn.execute('SELECT id,color FROM tags'))
-            if path == '/api/branding':
-                return self.respond(200, {'branding': theme, 'defaults': BRANDING_DEFAULTS})
-            css = ':root{' + ';'.join(f'--{key}:{theme[key]}' for key in ('primary','sidebar','background'))
-            css += f";--on-primary:{foreground(theme['primary'])};--on-sidebar:{foreground(theme['sidebar'])}" + '}'
-            for tag in tag_colors:
-                color = tag['color'] if re.fullmatch(r'#[0-9a-fA-F]{6}', tag['color']) else '#e6404d'
-                css += f".tag-color-{tag['id']}{{--tag-color:{color};--tag-ink:{foreground(color)}}}"
-            payload = css.encode()
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/css; charset=utf-8')
-            self.send_header('Content-Length', str(len(payload)))
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('X-Content-Type-Options', 'nosniff')
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-        if path == '/api/session':
-            with connect() as conn:
-                user = self.session(conn)
-                result = {'user': public_user(user) if user else None,
-                          'csrf_token': user['csrf_token'] if user else None,
-                          'setup_required': not bool(conn.execute('SELECT 1 FROM users LIMIT 1').fetchone())}
+                # Read the session, content, and assignments from one snapshot.
+                # Release the database before writing to a potentially slow client.
+                conn.execute('BEGIN')
+                if path == '/api/health':
+                    conn.execute('SELECT 1').fetchone()
+                    result = {
+                        'status': 'ok',
+                        'update_protocol': UPDATE_PROTOCOL,
+                        'revision': os.environ.get('VSM_REVISION', 'local'),
+                    }
+                elif path in ('/api/branding', '/branding.css'):
+                    theme = branding(conn)
+                    if path == '/api/branding':
+                        result = {'branding': theme, 'defaults': BRANDING_DEFAULTS}
+                    else:
+                        result = branding_stylesheet(
+                            theme, conn.execute('SELECT id,color FROM tags')
+                        )
+                elif path == '/api/session':
+                    user = self.session(conn)
+                    result = {
+                        'user': public_user(user) if user else None,
+                        'csrf_token': user['csrf_token'] if user else None,
+                        'setup_required': not bool(
+                            conn.execute('SELECT 1 FROM users LIMIT 1').fetchone()
+                        ),
+                    }
+                else:
+                    admin_only = any(
+                        path == base or path.startswith(base + '/') for base in ADMIN_READ_PATHS
+                    )
+                    self.require_user(conn, ('Admin',) if admin_only else ROLES)
+                    result = None if download else self.read_api(conn, path)
+            if download:
+                return self.download_backup(download[1])
+            if path == '/branding.css':
+                self.response_headers(
+                    200, len(result), 'text/css; charset=utf-8', {'Cache-Control': 'no-store'}
+                )
+                self.wfile.write(result)
+                return
             return self.respond(200, result)
-        if path.startswith('/api/'):
-            try:
-                with connect() as conn:
-                    self.require_user(conn, ('Admin',) if path == '/api/roles' or path.startswith('/api/users') or path.startswith('/api/updates') or path.startswith('/api/backups') else ROLES)
-                    if path == '/api/backups':
-                        return self.respond(200, {'backups':updater.list_backups(), 'operation':updater.status(),
-                                                  'supported':os.environ.get('VSM_BACKUP_PROTOCOL')=='1'})
-                    if re.fullmatch(r'/api/backups/[A-Za-z0-9_.-]+/download',path):
-                        try: source=updater.backup_path(path.split('/')[3])
-                        except ValueError as exc: raise ApiError(404,str(exc)) from exc
-                        self.send_response(200)
-                        self.send_header('Content-Type','application/octet-stream')
-                        self.send_header('Content-Disposition','attachment; filename="'+source.name+'"')
-                        self.send_header('Content-Length',str(source.stat().st_size))
-                        self.send_header('Cache-Control','no-store')
-                        self.send_header('X-Content-Type-Options','nosniff')
-                        self.end_headers()
-                        with source.open('rb') as handle: shutil.copyfileobj(handle,self.wfile)
-                        return
-                    if path == '/api/updates':
-                        return self.respond(200, updater.status())
-                    if path == '/api/roles':
-                        return self.respond(200, list(ROLES))
-                    if path == '/api/users':
-                        return self.respond(200, [public_user(row) for row in conn.execute('SELECT * FROM users ORDER BY username')])
-                    if re.fullmatch(r'/api/users/[0-9]+', path):
-                        row = conn.execute('SELECT * FROM users WHERE id=?', (int(path.rsplit('/', 1)[1]),)).fetchone()
-                        return self.respond(200, public_user(row)) if row else self.respond(404, {'error': 'Account not found'})
-            except ApiError as exc:
-                return self.respond(exc.status, {'error': str(exc)})
+        except ApiError as exc:
+            return self.respond(exc.status, {'error': str(exc)})
+
+    def read_api(self, conn, path):
+        if path == '/api/backups':
+            return {
+                'backups': updater.list_backups(),
+                'operation': updater.status(),
+                'supported': os.environ.get('VSM_BACKUP_PROTOCOL') == '1',
+            }
+        if path == '/api/updates':
+            return updater.status()
+        if path == '/api/roles':
+            return list(ROLES)
+        if path == '/api/users':
+            return [
+                public_user(row) for row in conn.execute('SELECT * FROM users ORDER BY username')
+            ]
+        if re.fullmatch(r'/api/users/[0-9]+', path):
+            row = conn.execute(
+                'SELECT * FROM users WHERE id=?', (int(path.rsplit('/', 1)[1]),)
+            ).fetchone()
+            if row is None:
+                raise ApiError(404, 'Account not found')
+            return public_user(row)
+        repository = ContentRepository(conn)
         if path == '/api/data':
-            with connect() as conn:
-                data = {table: [tagged_row(conn, table, row) for row in conn.execute('SELECT * FROM ' + table + (' ORDER BY position, id' if table == 'steps' else ' ORDER BY step_id, process_id' if table == 'step_processes' else ' ORDER BY id'))]
-                        for table in (*FIELDS, 'step_processes')}
-            return self.respond(200, data)
+            return repository.snapshot()
         parts = path.strip('/').split('/')
-        if len(parts) in (2, 3) and parts[0] == 'api' and parts[1] in FIELDS:
-            with connect() as conn:
-                if len(parts) == 2:
-                    return self.respond(200, [tagged_row(conn, parts[1], r) for r in conn.execute('SELECT * FROM ' + parts[1])])
-                if parts[2].isdigit():
-                    row = conn.execute('SELECT * FROM ' + parts[1] + ' WHERE id=?', (int(parts[2]),)).fetchone()
-                    return self.respond(200, tagged_row(conn, parts[1], row)) if row else self.respond(404, {'error': 'Not found'})
-        assets = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'), '/style.css': ('style.css', 'text/css')}
-        if path not in assets:
+        if len(parts) in (2, 3) and parts[1] in RESOURCES:
+            if len(parts) == 2:
+                return repository.list(parts[1])
+            if parts[2].isdigit():
+                return repository.get(parts[1], int(parts[2]))
+        raise ApiError(404, 'Not found')
+
+    def serve_asset(self, path):
+        if path not in STATIC_ASSETS:
             return self.respond(404, {'error': 'Not found'})
-        filename, mime = assets[path]
+        filename, mime = STATIC_ASSETS[path]
         payload = (ROOT / 'web' / filename).read_bytes()
-        self.send_response(200)
-        self.send_header('Content-Type', mime + '; charset=utf-8')
-        self.send_header('Content-Length', str(len(payload)))
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'")
-        self.end_headers()
+        self.response_headers(
+            200,
+            len(payload),
+            mime + '; charset=utf-8',
+            {'Content-Security-Policy': CONTENT_SECURITY_POLICY},
+        )
         self.wfile.write(payload)
 
+    def download_backup(self, identifier):
+        try:
+            source = updater.backup_path(identifier)
+        except ValueError as exc:
+            raise ApiError(404, str(exc)) from exc
+        # Stream from an opened file so cleanup cannot replace a later lookup.
+        try:
+            handle = source.open('rb')
+        except FileNotFoundError as exc:
+            raise ApiError(404, 'Backup not found') from exc
+        with handle:
+            self.response_headers(
+                200,
+                os.fstat(handle.fileno()).st_size,
+                'application/octet-stream',
+                {
+                    'Content-Disposition': 'attachment; filename="' + source.name + '"',
+                    'Cache-Control': 'no-store',
+                },
+            )
+            shutil.copyfileobj(handle, self.wfile)
+
     def require_backup_engine(self):
-        if os.environ.get('VSM_BACKUP_PROTOCOL')!='1' or not updater.status()['available']:
-            raise ApiError(409,'Restart with the updated installer or Docker image to enable full application backups.')
+        if os.environ.get('VSM_BACKUP_PROTOCOL') != '1' or not updater.status()['available']:
+            raise ApiError(
+                409,
+                'Restart with the updated installer or Docker image to enable full application backups.',
+            )
 
     def upload_backup(self):
-        source=None
+        source = None
         try:
             with connect() as conn:
-                self.require_user(conn,('Admin',),csrf=True)
+                self.require_user(conn, ('Admin',), csrf=True)
             self.require_backup_engine()
-            if updater.status()['state'] in updater.BUSY: raise ApiError(409,'Another maintenance operation is in progress')
-            if self.headers.get('Content-Type')!='application/octet-stream': raise ApiError(415,'Upload the backup as application/octet-stream')
-            size=int(self.headers.get('Content-Length','0'))
-            if size<=0 or size>updater.BACKUP_LIMIT: raise ApiError(413,'Upload must be between 1 byte and 128 MiB')
-            base=updater.directory()/'backups'
-            base.mkdir(parents=True,exist_ok=True)
-            os.chmod(base,0o700)
-            source=base/('.upload-'+uuid.uuid4().hex)
+            if updater.status()['state'] in updater.BUSY:
+                raise ApiError(409, 'Another maintenance operation is in progress')
+            if self.headers.get('Content-Type') != 'application/octet-stream':
+                raise ApiError(415, 'Upload the backup as application/octet-stream')
+            size = int(self.headers.get('Content-Length', '0'))
+            if size <= 0 or size > updater.BACKUP_LIMIT:
+                raise ApiError(413, 'Upload must be between 1 byte and 128 MiB')
+            base = updater.directory() / 'backups'
+            base.mkdir(parents=True, exist_ok=True)
+            os.chmod(base, 0o700)
+            source = base / ('.upload-' + uuid.uuid4().hex)
             with source.open('xb') as handle:
-                os.chmod(source,0o600)
-                remaining=size
+                os.chmod(source, 0o600)
+                remaining = size
                 while remaining:
-                    chunk=self.rfile.read(min(65536,remaining))
-                    if not chunk: raise ValueError('Incomplete backup upload')
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        raise ValueError('Incomplete backup upload')
                     handle.write(chunk)
-                    remaining-=len(chunk)
-                handle.flush();os.fsync(handle.fileno())
+                    remaining -= len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
             with tempfile.TemporaryDirectory(dir=base) as temporary:
-                updater.validate_backup(source,Path(temporary))
-                updater.validate_backup_database(Path(temporary)/'database.sqlite3')
-            identifier='uploaded-'+uuid.uuid4().hex+'.vsm-backup.zip'
-            os.replace(source,base/identifier)
-            source=None
-            self.respond(201,{'id':identifier})
-        except ApiError as exc: self.respond(exc.status,{'error':str(exc)})
-        except (ValueError,OSError,sqlite3.Error,updater.zipfile.BadZipFile,KeyError,TypeError,RecursionError) as exc:
-            self.respond(400,{'error':'Invalid backup upload: '+str(exc)})
+                updater.validate_backup(source, Path(temporary))
+                updater.validate_backup_database(Path(temporary) / 'database.sqlite3')
+            identifier = 'uploaded-' + uuid.uuid4().hex + '.vsm-backup.zip'
+            os.replace(source, base / identifier)
+            source = None
+            self.respond(201, {'id': identifier})
+        except ApiError as exc:
+            self.respond(exc.status, {'error': str(exc)})
+        except (
+            ValueError,
+            OSError,
+            sqlite3.Error,
+            updater.zipfile.BadZipFile,
+            KeyError,
+            TypeError,
+            RecursionError,
+        ) as exc:
+            self.respond(400, {'error': 'Invalid backup upload: ' + str(exc)})
         finally:
-            if source: source.unlink(missing_ok=True)
+            if source:
+                source.unlink(missing_ok=True)
+
+    def maintenance_request(self, conn, path, data):
+        """Validate an Admin request before handing it to the supervisor queue."""
+        self.require_user(conn, ('Admin',), csrf=True)
+        action = path.rsplit('/', 1)[1]
+        payload = {}
+        if path.startswith('/api/backups/'):
+            self.require_backup_engine()
+            if action == 'create':
+                if data:
+                    raise ValueError('Backup creation accepts an empty object')
+                action = 'backup'
+            elif action == 'restore':
+                if set(data) != {'id'}:
+                    raise ValueError('A backup identifier is required')
+                updater.backup_path(data['id'])
+                payload = {'id': data['id']}
+            else:
+                if set(data) != {'ids'} or not isinstance(data['ids'], list) or not data['ids']:
+                    raise ValueError('Select backups to remove')
+                for identifier in data['ids']:
+                    updater.backup_path(identifier)
+                payload = {'ids': data['ids']}
+        else:
+            if action == 'install':
+                self.require_backup_engine()
+            if data:
+                raise ValueError('Update requests do not accept configuration or source overrides')
+        try:
+            return updater.request(action, **payload)
+        except RuntimeError as exc:
+            raise ApiError(409, str(exc)) from exc
 
     def mutate(self, method):
         # Browser writes must originate from this host; no cross-origin API access.
         origin = self.headers.get('Origin')
-        if (origin and (urlparse(origin).scheme not in ('http', 'https') or urlparse(origin).netloc != self.headers.get('Host'))) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+        if (
+            origin
+            and (
+                urlparse(origin).scheme not in ('http', 'https')
+                or urlparse(origin).netloc != self.headers.get('Host')
+            )
+        ) or self.headers.get('Sec-Fetch-Site') == 'cross-site':
             return self.respond(403, {'error': 'Cross-origin writes are disabled'})
         path = urlparse(self.path).path
         parts = path.strip('/').split('/')
-        if path=='/api/backups/upload' and method=='POST': return self.upload_backup()
+        if path == '/api/backups/upload' and method == 'POST':
+            return self.upload_backup()
         if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
             return self.respond(415, {'error': 'Content-Type must be application/json'})
         try:
@@ -455,39 +827,27 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 # Serialize bootstrap and account changes, including the last-Admin invariant.
                 conn.execute('BEGIN IMMEDIATE')
-                if updater.status()['state'] in ('installing', 'restarting', 'backing-up', 'restoring'):
-                    raise ApiError(503, 'An update is being installed. Please wait for the application to restart.')
-                if path in ('/api/backups/create','/api/backups/restore','/api/backups/cleanup') and method=='POST':
-                    self.require_user(conn,('Admin',),csrf=True)
-                    self.require_backup_engine()
-                    action=path.rsplit('/',1)[1]
-                    if action=='create':
-                        if data: raise ValueError('Backup creation accepts an empty object')
-                        payload={}; action='backup'
-                    elif action=='restore':
-                        if set(data)!={'id'}: raise ValueError('A backup identifier is required')
-                        updater.backup_path(data['id']);payload={'id':data['id']}
-                    else:
-                        if set(data)!={'ids'} or not isinstance(data['ids'],list) or not data['ids']: raise ValueError('Select backups to remove')
-                        for identifier in data['ids']: updater.backup_path(identifier)
-                        payload={'ids':data['ids']}
-                    try: result=updater.request(action,**payload)
-                    except RuntimeError as exc: raise ApiError(409,str(exc)) from exc
-                    status,cookie=202,None
-                elif path in ('/api/updates/check', '/api/updates/install') and method == 'POST':
-                    self.require_user(conn, ('Admin',), csrf=True)
-                    if path.endswith('/install'): self.require_backup_engine()
-                    if data:
-                        raise ValueError('Update requests do not accept configuration or source overrides')
-                    try:
-                        result = updater.request(path.rsplit('/', 1)[1])
-                    except RuntimeError as exc:
-                        raise ApiError(409, str(exc)) from exc
+                if updater.status()['state'] in WRITES_PAUSED:
+                    raise ApiError(
+                        503,
+                        'An update is being installed. Please wait for the application to restart.',
+                    )
+                if method == 'POST' and path in (
+                    '/api/backups/create',
+                    '/api/backups/restore',
+                    '/api/backups/cleanup',
+                    '/api/updates/check',
+                    '/api/updates/install',
+                ):
+                    result = self.maintenance_request(conn, path, data)
                     status, cookie = 202, None
                 elif path == '/api/branding' and method == 'PUT':
                     self.require_user(conn, ('Admin',), csrf=True)
                     theme = validate_branding(data)
-                    conn.execute("INSERT INTO settings(key,value) VALUES ('branding',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(theme),))
+                    conn.execute(
+                        "INSERT INTO settings(key,value) VALUES ('branding',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (json.dumps(theme),),
+                    )
                     status, result, cookie = 200, theme, None
                 elif path.startswith('/api/auth/'):
                     status, result, cookie = self.auth_mutation(conn, path, method, data)
@@ -495,82 +855,17 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.account_mutation(conn, parts, method, data)
                     status, cookie = (201 if method == 'POST' else 200), None
                 else:
-                    self.require_user(conn, ('Admin',) if len(parts)>1 and parts[1] in ('tags','tag_categories') else ('Admin', 'Editor'), csrf=True)
-                    result = self.content_mutation(conn, parts, method, data)
+                    spec = RESOURCES.get(parts[1]) if len(parts) > 1 else None
+                    self.require_user(
+                        conn, spec.write_roles if spec else ('Admin', 'Editor'), csrf=True
+                    )
+                    result = ContentRepository(conn).mutate(parts, method, data)
                     status, cookie = (201 if method == 'POST' else 200), None
             self.respond(status, result, cookie)
         except ApiError as exc:
             self.respond(exc.status, {'error': str(exc)})
         except (ValueError, sqlite3.IntegrityError) as exc:
             self.respond(400, {'error': str(exc)})
-
-    def content_mutation(self, conn, parts, method, data):
-        if len(parts) == 4 and parts[:2] == ['api', 'steps'] and parts[2].isdigit() and parts[3] == 'processes' and method == 'PUT':
-            step_id = int(parts[2])
-            if not conn.execute('SELECT id FROM steps WHERE id=?', (step_id,)).fetchone():
-                raise ApiError(404, 'Step not found')
-            ids = data.get('process_ids')
-            if not isinstance(ids, list) or any(type(i) is not int for i in ids):
-                raise ValueError('process_ids must be an array of integer IDs')
-            conn.execute('DELETE FROM step_processes WHERE step_id=?', (step_id,))
-            conn.executemany('INSERT INTO step_processes VALUES (?,?)', [(step_id, i) for i in set(ids)])
-            result = {'step_id': step_id, 'process_ids': ids}
-        else:
-            if len(parts) not in (2, 3) or parts[0] != 'api' or parts[1] not in FIELDS:
-                raise ApiError(404, 'Not found')
-            table = parts[1]
-            if len(parts)==3 and not parts[2].isdigit(): raise ApiError(404, 'Not found')
-            ident = int(parts[2]) if len(parts) == 3 else None
-            if method == 'POST' and ident is not None or method != 'POST' and ident is None:
-                raise ApiError(405, 'Unsupported method for this resource')
-            if ident is not None and not conn.execute('SELECT id FROM ' + table + ' WHERE id=?', (ident,)).fetchone():
-                raise ApiError(404, 'Not found')
-            if method == 'DELETE':
-                conn.execute('DELETE FROM ' + table + ' WHERE id=?', (ident,))
-                result = {'deleted': ident}
-            else:
-                if 'tag_ids' in data and data['tag_ids'] is None: raise ValueError('tag_ids must be an array of integer IDs')
-                tag_ids = data.pop('tag_ids', None) if table in ('streams','steps','processes') else None
-                if tag_ids is not None:
-                    if not isinstance(tag_ids,list) or any(type(i) is not int for i in tag_ids):
-                        raise ValueError('tag_ids must be an array of integer IDs')
-                    if any(not conn.execute('SELECT 1 FROM tags WHERE id=?',(i,)).fetchone() for i in tag_ids):
-                        raise ValueError('Unknown tag')
-                if table == 'tags' and 'color' in data and (not isinstance(data['color'], str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',data['color'])):
-                    raise ValueError('Tag color must be a six-digit hex color')
-                if table in ('tags','tag_categories') and 'name' in data:
-                    if not isinstance(data['name'],str) or not 1 <= len(data['name'].strip()) <= 80:
-                        raise ValueError('Name must contain 1–80 characters')
-                    data['name']=data['name'].strip()
-                if set(data) - set(FIELDS[table]):
-                    raise ValueError('Unknown fields')
-                if method == 'POST' and ('name' not in data or table == 'steps' and 'stream_id' not in data):
-                    raise ValueError('name and, for steps, stream_id are required')
-                import math
-                for key, value in data.items():
-                    kind = FIELDS[table][key]
-                    if kind is str and (not isinstance(value, str) or len(value) > 20000):
-                        raise ValueError(key + ' must be text of at most 20000 characters')
-                    if table=='tags' and key=='category_id' and value is None: continue
-                    if kind is int and type(value) is not int:
-                        raise ValueError(key + ' must be an integer')
-                    if kind is float and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
-                        raise ValueError(key + ' must be a finite nonnegative number')
-                if 'name' in data and not data['name'].strip():
-                    raise ValueError('Name cannot be empty')
-                if not data and tag_ids is None:
-                    raise ValueError('No fields supplied')
-                if method == 'POST':
-                    columns = ','.join(data)
-                    cursor = conn.execute(f'INSERT INTO {table} ({columns}) VALUES ({",".join("?" for _ in data)})', list(data.values()))
-                    ident = cursor.lastrowid
-                elif data:
-                    conn.execute(f'UPDATE {table} SET {",".join(k + "=?" for k in data)} WHERE id=?', [*data.values(), ident])
-                if tag_ids is not None:
-                    conn.execute(f'DELETE FROM {table}_tags WHERE entity_id=?',(ident,))
-                    conn.executemany(f'INSERT INTO {table}_tags VALUES (?,?)',[(ident,i) for i in set(tag_ids)])
-                result = tagged_row(conn, table, conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (ident,)).fetchone())
-        return result
 
     def do_POST(self):
         self.mutate('POST')

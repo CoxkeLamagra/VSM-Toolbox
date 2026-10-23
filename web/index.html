@@ -1,6 +1,59 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VSM Toolbox</title><link rel="stylesheet" href="/style.css"><link id="brandingStyles" rel="stylesheet" href="/branding.css"><script src="/app.js" defer></script></head>
-<body><aside><a class="brand" href="/">◈ <span>VSM Toolbox</span></a><div class="workspace">YOUR WORKSPACE</div><button id="streamsNav" class="nav active">▱ &nbsp; Value streams</button><button id="processNav" class="nav">☷ &nbsp; Process library</button><div id="adminMenu" hidden><div class="workspace">ADMINISTRATOR</div><button id="tagsNav" class="nav">◆ &nbsp; Tags &amp; categories</button><button id="brandingNav" class="nav">◈ &nbsp; Branding &amp; theme</button><button id="accountsNav" class="nav">♙ &nbsp; Account administration</button><button id="backupsNav" class="nav">▣ &nbsp; Backups &amp; restore</button><button id="updatesNav" class="nav">↻ &nbsp; Application updates</button></div><div class="aside-bottom">LOCAL WORKSPACE<br><span>● Data stays on your server</span></div></aside>
-<main><header><span>Workspace / <b id="breadcrumb">Value streams</b></span><div id="identity"></div></header><section id="content"></section><div id="error" role="alert" hidden></div></main>
-<dialog id="editor"><form id="form"><div class="dialog-top"><h2 id="dialogTitle"></h2><button type="button" id="closeDialog" aria-label="Close">×</button></div><div id="fields"></div><div class="dialog-actions"><button type="button" id="cancelDialog">Cancel</button><button class="primary" type="submit">Save changes</button></div></form></dialog>
-</body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>VSM Toolbox</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link id="brandingStyles" rel="stylesheet" href="/branding.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <aside>
+      <a class="brand" href="/">
+        ◈
+        <span>VSM Toolbox</span>
+      </a>
+      <div class="workspace">YOUR WORKSPACE</div>
+      <button id="streamsNav" class="nav active">▱ &nbsp; Value streams</button>
+      <button id="processNav" class="nav">☷ &nbsp; Process library</button>
+      <div id="adminMenu" hidden>
+        <div class="workspace">ADMINISTRATOR</div>
+        <button id="tagsNav" class="nav">◆ &nbsp; Tags &amp; categories</button>
+        <button id="brandingNav" class="nav">◈ &nbsp; Branding &amp; theme</button>
+        <button id="accountsNav" class="nav">♙ &nbsp; Account administration</button>
+        <button id="backupsNav" class="nav">▣ &nbsp; Backups &amp; restore</button>
+        <button id="updatesNav" class="nav">↻ &nbsp; Application updates</button>
+      </div>
+      <div class="aside-bottom">
+        LOCAL WORKSPACE
+        <br />
+        <span>● Data stays on your server</span>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <span>
+          Workspace /
+          <b id="breadcrumb">Value streams</b>
+        </span>
+        <div id="identity"></div>
+      </header>
+      <section id="content"></section>
+      <div id="error" role="alert" hidden></div>
+    </main>
+    <dialog id="editor">
+      <form id="form">
+        <div class="dialog-top">
+          <h2 id="dialogTitle"></h2>
+          <button type="button" id="closeDialog" aria-label="Close">×</button>
+        </div>
+        <div id="fields"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancelDialog">Cancel</button>
+          <button class="primary" type="submit">Save changes</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
