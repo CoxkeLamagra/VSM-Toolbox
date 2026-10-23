@@ -229,3 +229,14 @@ PY
 ```
 
 Run with permission to read/write those paths and restrict backup permissions. Restore database-only files while the service is stopped and ensure the application version matches the database schema.
+
+
+### Branding and theme
+
+Open **Administrator → Branding & theme** to set the application name, workspace tagline, local logo (PNG/JPEG, up to 128 KiB), accent color, navigation background, and page background. Save applies branding across the workspace and sign-in page; other users see it on their next refresh. **Restore default theme** resets all branding fields, including the logo.
+
+The default uses navy navigation, white surfaces, and a coral-red accent, inspired by the requested Cegeka reference. It uses system fonts and makes no external asset requests. Text on accent buttons and navigation automatically selects a contrasting light or dark color. Brand settings and embedded logo are stored in SQLite, included in application backups, and recovered by restoring a backup. Restoring a backup made before this feature returns to default branding.
+
+`GET /api/branding` is public so the sign-in page can display branding; it exposes only public branding and defaults. `PUT /api/branding` requires an Admin session and CSRF token and accepts the complete `name`, `tagline`, `primary`, `sidebar`, `background`, and `logo` object. Colors use `#RRGGBB`; logo is an empty string or a PNG/JPEG base64 data URL. Custom CSS, SVGs, and external logo URLs are not accepted.
+
+Validation: `python3 -m unittest discover -s tests -v` includes branding authorization, input validation, and persistence. Run `node tests/branding.cjs` with Playwright and Chromium (using the same environment options as the existing browser tests) to verify saving branding, logo rendering, theme application, sign-in branding, and mobile layout.

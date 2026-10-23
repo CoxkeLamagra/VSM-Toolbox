@@ -1,5 +1,7 @@
 """Local Value Stream Mapping server. Python 3.11+, no third-party dependencies."""
 import json
+import base64
+import binascii
 import tempfile
 import uuid
 import shutil
@@ -38,6 +40,7 @@ def connect():
 def initialize():
     with connect() as conn:
         conn.executescript('''
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
           password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('Admin','Editor','Viewer')));
@@ -62,6 +65,50 @@ def initialize():
           process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
           PRIMARY KEY(step_id, process_id));
         ''')
+
+
+BRANDING_DEFAULTS = {
+    'name': 'VSM Toolbox', 'tagline': 'Value streams. Connected.',
+    'primary': '#e6404d', 'sidebar': '#151d44', 'background': '#f5f6fa', 'logo': ''}
+
+
+def branding(conn):
+    row = conn.execute("SELECT value FROM settings WHERE key='branding'").fetchone()
+    return {**BRANDING_DEFAULTS, **(json.loads(row['value']) if row else {})}
+
+
+def validate_branding(data):
+    if set(data) != set(BRANDING_DEFAULTS):
+        raise ValueError('Supply name, tagline, primary, sidebar, background and logo')
+    for key, limit in (('name', 64), ('tagline', 120)):
+        if not isinstance(data[key], str) or not data[key].strip() or len(data[key]) > limit:
+            raise ValueError(f'{key} must contain 1–{limit} characters')
+        data[key] = data[key].strip()
+    for key in ('primary', 'sidebar', 'background'):
+        if not isinstance(data[key], str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', data[key]):
+            raise ValueError(f'{key} must be a six-digit hex color')
+    logo = data['logo']
+    if not isinstance(logo, str) or len(logo) > 180000:
+        raise ValueError('Logo must be a PNG or JPEG up to 128 KiB')
+    if logo:
+        match = re.fullmatch(r'data:image/(png|jpeg);base64,([A-Za-z0-9+/=]+)', logo)
+        if not match:
+            raise ValueError('Logo must be a PNG or JPEG')
+        try:
+            raw = base64.b64decode(match[2], validate=True)
+        except binascii.Error as exc:
+            raise ValueError('Invalid logo encoding') from exc
+        signature = b'\x89PNG\r\n\x1a\n' if match[1] == 'png' else b'\xff\xd8\xff'
+        if len(raw) > 131072 or not raw.startswith(signature):
+            raise ValueError('Invalid logo image or logo exceeds 128 KiB')
+    return data
+
+
+def foreground(color):
+    values = [int(color[i:i+2], 16)/255 for i in (1, 3, 5)]
+    linear = [v/12.92 if v <= .04045 else ((v+.055)/1.055)**2.4 for v in values]
+    luminance = sum(v*w for v, w in zip(linear, (.2126, .7152, .0722)))
+    return '#ffffff' if luminance < .179 else '#111827'
 
 
 ROLES = ('Admin', 'Editor', 'Viewer')
@@ -242,6 +289,22 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 conn.execute('SELECT 1').fetchone()
             return self.respond(200, {'status': 'ok', 'update_protocol': UPDATE_PROTOCOL, 'revision': os.environ.get('VSM_REVISION', 'local')})
+        if path in ('/api/branding', '/branding.css'):
+            with connect() as conn:
+                theme = branding(conn)
+            if path == '/api/branding':
+                return self.respond(200, {'branding': theme, 'defaults': BRANDING_DEFAULTS})
+            css = ':root{' + ';'.join(f'--{key}:{theme[key]}' for key in ('primary','sidebar','background'))
+            css += f";--on-primary:{foreground(theme['primary'])};--on-sidebar:{foreground(theme['sidebar'])}" + '}'
+            payload = css.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/css; charset=utf-8')
+            self.send_header('Content-Length', str(len(payload)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path == '/api/session':
             with connect() as conn:
                 user = self.session(conn)
@@ -301,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', mime + '; charset=utf-8')
         self.send_header('Content-Length', str(len(payload)))
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -394,6 +457,11 @@ class Handler(BaseHTTPRequestHandler):
                     except RuntimeError as exc:
                         raise ApiError(409, str(exc)) from exc
                     status, cookie = 202, None
+                elif path == '/api/branding' and method == 'PUT':
+                    self.require_user(conn, ('Admin',), csrf=True)
+                    theme = validate_branding(data)
+                    conn.execute("INSERT INTO settings(key,value) VALUES ('branding',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(theme),))
+                    status, result, cookie = 200, theme, None
                 elif path.startswith('/api/auth/'):
                     status, result, cookie = self.auth_mutation(conn, path, method, data)
                 elif len(parts) >= 2 and parts[:2] == ['api', 'users']:

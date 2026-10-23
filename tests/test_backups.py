@@ -48,9 +48,14 @@ class BackupTest(test_updater.UpdaterTest):
         self.assertTrue(self.supervisor.healthy(timeout=10))
 
     def test_manual_backup_contains_code_database_and_checksums(self):
+        with sqlite3.connect(self.db) as db:
+            db.execute("INSERT INTO settings(key,value) VALUES ('branding',?)", (json.dumps({**app.BRANDING_DEFAULTS, 'name':'Backed-up brand'}),))
         source=self.manual()
         metadata=updater.validate_backup(source)
         self.assertEqual(metadata['reason'],'manual')
+        target, _ = updater.unpack_backup(source)
+        with sqlite3.connect(target/'database.sqlite3') as db:
+            self.assertEqual(json.loads(db.execute("SELECT value FROM settings WHERE key='branding'").fetchone()[0])['name'], 'Backed-up brand')
         with zipfile.ZipFile(source) as archive:
             self.assertEqual(set(archive.namelist()),{*updater.BACKUP_FILES,'backup.json'})
             self.assertEqual(archive.read('app.py'),(updater.ROOT/'app.py').read_bytes())

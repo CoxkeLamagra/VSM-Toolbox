@@ -1,6 +1,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, view = 'streams', selected = null, saveForm, session = {}, accounts = [], updateStatus = {}, updateTimer;
+let brandSettings = {}, brandDefaults = {};
 let backupState = {backups:[],operation:{}};
 let streamMode = 'diagram', diagramController = null;
 const canEdit = () => ['Admin','Editor'].includes(session.user?.role);
@@ -37,9 +38,12 @@ async function api(path, method = 'GET', data) {
 }
 function error(e) { $('#error').textContent = e.message; $('#error').hidden = false; setTimeout(() => $('#error').hidden = true, 7000); }
 async function refresh() {
+  const brandResponse = await api('branding');
+  brandSettings = brandResponse.branding; brandDefaults = brandResponse.defaults;
+  applyBranding();
   session = await api('session');
   if (!session.user) { state=null; render(); return; }
-  if (session.user.role !== 'Admin' && ['accounts','updates','backups'].includes(view)) view='streams';
+  if (session.user.role !== 'Admin' && ['accounts','updates','backups','branding'].includes(view)) view='streams';
   state = await api('data');
   if (view === 'accounts') accounts = await api('users');
   if (view === 'backups') backupState = await api('backups');
@@ -165,6 +169,8 @@ function render() {
   $('#identity').innerHTML=user?`<span>${esc(user.username)} <span class="pill">${esc(user.role)}</span></span><button id="logout" class="text-button">Sign out</button>`:'';
   if(user) $('#logout').onclick=async()=>{try{await api('auth/logout','POST',{});session={};selected=null;view='streams';await refresh();}catch(e){error(e);}};
   if(!user) return renderAuth();
+  for(const name of ['branding','accounts','backups','updates'])$('#'+name+'Nav').classList.toggle('active',view===name);
+  if(view==='branding') {$('#streamsNav').classList.remove('active');$('#processNav').classList.remove('active');return renderBranding();}
   $('#accountsNav').classList.toggle('active',view==='accounts');
   $('#backupsNav').classList.toggle('active',view==='backups');
   if(view==='backups') {$('#streamsNav').classList.remove('active');$('#processNav').classList.remove('active');return renderBackups();}
@@ -182,13 +188,44 @@ function render() {
     $('#content').querySelectorAll('[data-action="edit-process"]').forEach(el=>el.textContent='View details →');
   }
 }
+function applyBranding() {
+  document.title = brandSettings.name;
+  const stylesheet='/branding.css?v='+encodeURIComponent([brandSettings.primary,brandSettings.sidebar,brandSettings.background].join(','));
+  if($('#brandingStyles').getAttribute('href')!==stylesheet)$('#brandingStyles').href=stylesheet;
+  $('.brand').innerHTML = `${brandSettings.logo ? `<img class="brand-logo" src="${esc(brandSettings.logo)}" alt="">` : '<b aria-hidden="true">◈</b>'}<span>${esc(brandSettings.name)}</span>`;
+  $('.aside-bottom').innerHTML = `${esc(brandSettings.tagline)}<br><span>● Data stays on your server</span>`;
+}
+function renderBranding() {
+  $('#breadcrumb').textContent = 'Administrator / Branding & theme';
+  $('#content').innerHTML = `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Branding & theme</h1><p>Make this workspace your own. Settings apply to all users and the sign-in page.</p></div></div><form id="brandingForm" class="branding-panel"><h2>Workspace identity</h2><label>Application name<input name="name" value="${esc(brandSettings.name)}" required maxlength="64"></label><label>Workspace tagline<input name="tagline" value="${esc(brandSettings.tagline)}" required maxlength="120"></label><label>Logo (PNG or JPEG, up to 128 KiB)<input id="brandLogoFile" type="file" accept="image/png,image/jpeg"></label>${brandSettings.logo?`<img class="logo-preview" src="${esc(brandSettings.logo)}" alt="Current workspace logo">`:''}<label class="check"><input id="removeBrandLogo" type="checkbox">Remove current logo</label><h2>Theme colors</h2><div class="brand-colors">${[['primary','Accent / buttons'],['sidebar','Navigation background'],['background','Page background']].map(([key,label])=>`<label>${label}<input name="${key}" type="color" value="${esc(brandSettings[key])}"></label>`).join('')}</div><p class="hint">Button and navigation text automatically use a contrasting color. All assets stay on this server.</p><p id="brandingStatus" role="status"></p><div class="detail-actions"><button class="primary" type="submit">Save branding</button><button id="resetBranding" type="button">Restore default theme</button></div></form>`;
+  async function save(theme) {
+    await api('branding','PUT',theme);
+    $('#brandingStyles').href='/branding.css?v='+Date.now();
+    await refresh();
+    $('#brandingStatus').textContent='Branding saved.';
+  }
+  $('#brandingForm').onsubmit=async event=>{
+    event.preventDefault(); const button=event.submitter; button.disabled=true;
+    try {
+      const theme={...Object.fromEntries(new FormData(event.target)),logo:$('#removeBrandLogo').checked?'':brandSettings.logo};
+      const file=$('#brandLogoFile').files[0];
+      if(file) {
+        if(!['image/png','image/jpeg'].includes(file.type)||file.size>131072)throw new Error('Choose a PNG or JPEG up to 128 KiB.');
+        theme.logo=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Could not read logo.'));reader.readAsDataURL(file);});
+      }
+      await save(theme);
+    } catch(e){error(e);} finally{button.disabled=false;}
+  };
+  $('#resetBranding').onclick=async()=>{if(confirm('Restore the default name, logo, and theme for all users?'))try{await save({...brandDefaults});}catch(e){error(e);}};
+}
+$('#brandingNav').onclick=()=>{view='branding';selected=null;refresh().catch(error);};
 function credentialFields(username='', passwordRequired=true) {
   return `<label>Username<input name="username" aria-label="Username" value="${esc(username)}" required minlength="3" maxlength="64" autocomplete="username"><span class="hint">3–64 letters, numbers, dots, underscores or hyphens.</span></label><label>${passwordRequired?'Password':'New password (leave blank to keep current)'}<input name="password" aria-label="${passwordRequired?'Password':'New password'}" type="password" ${passwordRequired?'required':''} minlength="12" maxlength="128" autocomplete="new-password"><span class="hint">Use 12–128 characters.</span></label>`;
 }
 function renderAuth() {
   $('#breadcrumb').textContent='Local accounts';
   const setup=session.setup_required;
-  $('#content').innerHTML=`<div class="auth-card"><span class="icon">◈</span><h1>${setup?'Create your Admin account':'Welcome back'}</h1><p>${setup?'The first account administers this local workspace. Additional accounts are created by an Admin.':'Sign in to your local VSM Toolbox workspace.'}</p><form id="authForm">${setup?credentialFields():`<label>Username<input name="username" autocomplete="username" required maxlength="64"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>`}<button class="primary" type="submit">${setup?'Create Admin account':'Sign in'}</button><p id="authError" role="alert"></p></form></div>`;
+  $('#content').innerHTML=`<div class="auth-card"><span class="icon">◈</span><h1>${setup?'Create your Admin account':'Welcome back'}</h1><p>${setup?'The first account administers this local workspace. Additional accounts are created by an Admin.':`Sign in to your local ${esc(brandSettings.name)} workspace.`}</p><form id="authForm">${setup?credentialFields():`<label>Username<input name="username" autocomplete="username" required maxlength="64"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>`}<button class="primary" type="submit">${setup?'Create Admin account':'Sign in'}</button><p id="authError" role="alert"></p></form></div>`;
   $('#authForm').onsubmit=async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
     try{session=await api('auth/'+(setup?'register':'login'),'POST',Object.fromEntries(new FormData(e.target)));await refresh();}
