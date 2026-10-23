@@ -247,3 +247,14 @@ Validation: `python3 -m unittest discover -s tests -v` includes branding authori
 Create or edit a value stream and fill in **Voice of the Customer (VOC)** to record what the customer is actually requesting you to deliver, preferably in their own words. For example: “Give each new starter working access to email, business applications, and secure remote access on their first day.”
 
 When supplied, VOC appears as the final draggable node after the customer outcome in the diagram. The full request appears below both the diagram and Edit flow, including for streams without steps. Admins and Editors can use **Add customer request / Edit customer request**; Viewers can read it. The optional `voc` string is supported by the stream POST, PUT, and GET APIs. Existing databases migrate automatically with an empty VOC field. VOC is stored in SQLite and included in backups.
+
+
+### Tags and categories
+
+Open **Administrator → Tags & categories** to create, rename, recolor, categorize, or remove shared tags, and to create, rename, or delete categories. Only Admins can change the catalog. Deleting a category moves its tags to **Uncategorized**; deleting a tag removes its assignments without deleting any streams, steps, or processes. Tag and category names must be unique (case insensitive) and contain 1–80 characters.
+
+Admins and Editors can select existing tags in the create/edit forms for value streams, delivery steps, and processes. Viewers can read assigned tags. Tags are grouped by category in the selector. Stream and process cards, stream details, and Edit flow show colored badges; diagram cards show up to two tag badges, with all names in their tooltip and full assignments in the details dialog. A stream's overview icon uses the first assigned tag alphabetically (case insensitive, using the browser locale); removing its last tag restores the default icon. Badge text selects a contrasting light or dark color.
+
+The catalog, colors, categories, and assignments stay in SQLite and are included in backups. Existing workspaces gain empty tag tables automatically. `GET /api/tags` and `GET /api/tag_categories` require sign-in; their POST/PUT/DELETE operations require Admin and CSRF. Tags accept `name`, `color` (`#RRGGBB`), and optional `category_id` (integer or null). Stream, step, and process POST/PUT requests accept `tag_ids` as an array of existing integer tag IDs. Supplying an empty array clears assignments; omitting it preserves them. The response includes `tag_ids`. Content and assignments save in one transaction.
+
+Tag tests run with the Python regression suite and `node tests/tags.cjs` (using the existing Playwright/Chromium environment options). They cover catalog permissions, all assignment types, validation, cleanup, color updates, and backup restoration.

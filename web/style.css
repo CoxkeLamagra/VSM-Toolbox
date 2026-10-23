@@ -35,3 +35,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .stream-card{cursor:pointer}.stream-card:focus-within{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary)}
 
 .voc-panel{margin-top:24px;padding:24px;background:white;border:1px solid #dce0ea;border-left:4px solid var(--primary);border-radius:10px}.voc-panel p{white-space:pre-wrap;overflow-wrap:anywhere;color:#33405e}.voc-panel .section-row{gap:16px;flex-wrap:wrap}
+
+.tag-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag-badges:empty{display:none}.tag-badge{display:inline-block;background:var(--tag-color,#e6404d);color:var(--tag-ink,#111827);padding:5px 9px;border-radius:12px;font-size:11px;line-height:1.4;overflow-wrap:anywhere;max-width:100%}.icon.tagged-icon{background:var(--tag-color);color:var(--tag-ink)}.tag-picker{border:1px solid #dce0ea;border-radius:8px;margin:20px 0;padding:16px;max-height:280px;overflow:auto}.tag-picker legend{font-weight:600}.tag-group>b{display:block;margin-bottom:12px}.tag-group+.tag-group{margin-top:18px}.tag-group label{margin-bottom:8px}.tag-management{background:white;border:1px solid #dce0ea;border-radius:10px;margin-bottom:20px;padding:24px}.tag-list{display:grid;gap:12px}.tag-management-row{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.tag-management-row code{font-size:11px;color:#535f7b}
+
+.svg-tag-bg{fill:var(--tag-color)}.svg-tag-text{fill:var(--tag-ink);font-size:10px}

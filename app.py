@@ -61,11 +61,20 @@ def initialize():
         CREATE TABLE IF NOT EXISTS processes (
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '',
           description TEXT NOT NULL DEFAULT '', procedure TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS tag_categories (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE);
+        CREATE TABLE IF NOT EXISTS tags (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          color TEXT NOT NULL DEFAULT '#e6404d',
+          category_id INTEGER REFERENCES tag_categories(id) ON DELETE SET NULL);
         CREATE TABLE IF NOT EXISTS step_processes (
           step_id INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
           process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
           PRIMARY KEY(step_id, process_id));
         ''')
+
+        for entity in ('streams', 'steps', 'processes'):
+            conn.execute(f'CREATE TABLE IF NOT EXISTS {entity}_tags (entity_id INTEGER NOT NULL REFERENCES {entity}(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(entity_id,tag_id))')
 
         # Existing workspaces gain an optional customer request without losing data.
         if 'voc' not in {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}:
@@ -116,6 +125,13 @@ def foreground(color):
     return '#ffffff' if luminance < .179 else '#111827'
 
 
+def tagged_row(conn, table, row):
+    result = dict(row)
+    if table in ('streams','steps','processes'):
+        result['tag_ids'] = [r[0] for r in conn.execute(f'SELECT tag_id FROM {table}_tags WHERE entity_id=? ORDER BY tag_id', (row['id'],))]
+    return result
+
+
 ROLES = ('Admin', 'Editor', 'Viewer')
 SESSION_SECONDS = 12 * 60 * 60
 PASSWORD_ITERATIONS = 600_000
@@ -158,6 +174,8 @@ def public_user(row):
 
 
 FIELDS = {
+    'tags': {'name':str, 'color':str, 'category_id':int},
+    'tag_categories': {'name':str},
     'streams': {'name': str, 'customer': str, 'outcome': str, 'description': str, 'voc': str},
     'steps': {'name': str, 'stream_id': int, 'owner': str, 'position': int,
               'work_minutes': float, 'wait_minutes': float},
@@ -297,10 +315,14 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/branding', '/branding.css'):
             with connect() as conn:
                 theme = branding(conn)
+                tag_colors = list(conn.execute('SELECT id,color FROM tags'))
             if path == '/api/branding':
                 return self.respond(200, {'branding': theme, 'defaults': BRANDING_DEFAULTS})
             css = ':root{' + ';'.join(f'--{key}:{theme[key]}' for key in ('primary','sidebar','background'))
             css += f";--on-primary:{foreground(theme['primary'])};--on-sidebar:{foreground(theme['sidebar'])}" + '}'
+            for tag in tag_colors:
+                color = tag['color'] if re.fullmatch(r'#[0-9a-fA-F]{6}', tag['color']) else '#e6404d'
+                css += f".tag-color-{tag['id']}{{--tag-color:{color};--tag-ink:{foreground(color)}}}"
             payload = css.encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/css; charset=utf-8')
@@ -349,17 +371,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(exc.status, {'error': str(exc)})
         if path == '/api/data':
             with connect() as conn:
-                data = {table: [dict(row) for row in conn.execute('SELECT * FROM ' + table + (' ORDER BY position, id' if table == 'steps' else ' ORDER BY step_id, process_id' if table == 'step_processes' else ' ORDER BY id'))]
+                data = {table: [tagged_row(conn, table, row) for row in conn.execute('SELECT * FROM ' + table + (' ORDER BY position, id' if table == 'steps' else ' ORDER BY step_id, process_id' if table == 'step_processes' else ' ORDER BY id'))]
                         for table in (*FIELDS, 'step_processes')}
             return self.respond(200, data)
         parts = path.strip('/').split('/')
         if len(parts) in (2, 3) and parts[0] == 'api' and parts[1] in FIELDS:
             with connect() as conn:
                 if len(parts) == 2:
-                    return self.respond(200, [dict(r) for r in conn.execute('SELECT * FROM ' + parts[1])])
+                    return self.respond(200, [tagged_row(conn, parts[1], r) for r in conn.execute('SELECT * FROM ' + parts[1])])
                 if parts[2].isdigit():
                     row = conn.execute('SELECT * FROM ' + parts[1] + ' WHERE id=?', (int(parts[2]),)).fetchone()
-                    return self.respond(200, dict(row)) if row else self.respond(404, {'error': 'Not found'})
+                    return self.respond(200, tagged_row(conn, parts[1], row)) if row else self.respond(404, {'error': 'Not found'})
         assets = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'), '/style.css': ('style.css', 'text/css')}
         if path not in assets:
             return self.respond(404, {'error': 'Not found'})
@@ -473,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.account_mutation(conn, parts, method, data)
                     status, cookie = (201 if method == 'POST' else 200), None
                 else:
-                    self.require_user(conn, ('Admin', 'Editor'), csrf=True)
+                    self.require_user(conn, ('Admin',) if len(parts)>1 and parts[1] in ('tags','tag_categories') else ('Admin', 'Editor'), csrf=True)
                     result = self.content_mutation(conn, parts, method, data)
                     status, cookie = (201 if method == 'POST' else 200), None
             self.respond(status, result, cookie)
@@ -497,6 +519,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) not in (2, 3) or parts[0] != 'api' or parts[1] not in FIELDS:
                 raise ApiError(404, 'Not found')
             table = parts[1]
+            if len(parts)==3 and not parts[2].isdigit(): raise ApiError(404, 'Not found')
             ident = int(parts[2]) if len(parts) == 3 else None
             if method == 'POST' and ident is not None or method != 'POST' and ident is None:
                 raise ApiError(405, 'Unsupported method for this resource')
@@ -506,6 +529,19 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute('DELETE FROM ' + table + ' WHERE id=?', (ident,))
                 result = {'deleted': ident}
             else:
+                if 'tag_ids' in data and data['tag_ids'] is None: raise ValueError('tag_ids must be an array of integer IDs')
+                tag_ids = data.pop('tag_ids', None) if table in ('streams','steps','processes') else None
+                if tag_ids is not None:
+                    if not isinstance(tag_ids,list) or any(type(i) is not int for i in tag_ids):
+                        raise ValueError('tag_ids must be an array of integer IDs')
+                    if any(not conn.execute('SELECT 1 FROM tags WHERE id=?',(i,)).fetchone() for i in tag_ids):
+                        raise ValueError('Unknown tag')
+                if table == 'tags' and 'color' in data and (not isinstance(data['color'], str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',data['color'])):
+                    raise ValueError('Tag color must be a six-digit hex color')
+                if table in ('tags','tag_categories') and 'name' in data:
+                    if not isinstance(data['name'],str) or not 1 <= len(data['name'].strip()) <= 80:
+                        raise ValueError('Name must contain 1–80 characters')
+                    data['name']=data['name'].strip()
                 if set(data) - set(FIELDS[table]):
                     raise ValueError('Unknown fields')
                 if method == 'POST' and ('name' not in data or table == 'steps' and 'stream_id' not in data):
@@ -515,21 +551,25 @@ class Handler(BaseHTTPRequestHandler):
                     kind = FIELDS[table][key]
                     if kind is str and (not isinstance(value, str) or len(value) > 20000):
                         raise ValueError(key + ' must be text of at most 20000 characters')
+                    if table=='tags' and key=='category_id' and value is None: continue
                     if kind is int and type(value) is not int:
                         raise ValueError(key + ' must be an integer')
                     if kind is float and (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
                         raise ValueError(key + ' must be a finite nonnegative number')
                 if 'name' in data and not data['name'].strip():
                     raise ValueError('Name cannot be empty')
-                if not data:
+                if not data and tag_ids is None:
                     raise ValueError('No fields supplied')
                 if method == 'POST':
                     columns = ','.join(data)
                     cursor = conn.execute(f'INSERT INTO {table} ({columns}) VALUES ({",".join("?" for _ in data)})', list(data.values()))
                     ident = cursor.lastrowid
-                else:
+                elif data:
                     conn.execute(f'UPDATE {table} SET {",".join(k + "=?" for k in data)} WHERE id=?', [*data.values(), ident])
-                result = dict(conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (ident,)).fetchone())
+                if tag_ids is not None:
+                    conn.execute(f'DELETE FROM {table}_tags WHERE entity_id=?',(ident,))
+                    conn.executemany(f'INSERT INTO {table}_tags VALUES (?,?)',[(ident,i) for i in set(tag_ids)])
+                result = tagged_row(conn, table, conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (ident,)).fetchone())
         return result
 
     def do_POST(self):

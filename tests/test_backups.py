@@ -61,6 +61,22 @@ class BackupTest(test_updater.UpdaterTest):
             self.assertEqual(archive.read('app.py'),(updater.ROOT/'app.py').read_bytes())
         self.assertTrue(self.supervisor.healthy(timeout=10))
 
+    def test_tag_catalog_and_assignments_survive_restore(self):
+        with sqlite3.connect(self.db) as db:
+            db.execute("INSERT INTO tag_categories(id,name) VALUES (1,'Services')")
+            db.execute("INSERT INTO tags(id,name,color,category_id) VALUES (1,'Critical','#336699',1)")
+            db.execute("INSERT INTO streams_tags SELECT id,1 FROM streams")
+        source = self.manual()
+        with sqlite3.connect(self.db) as db:
+            db.execute('DELETE FROM streams_tags')
+            db.execute('DELETE FROM tags')
+        self.supervisor.maintenance({'action':'restore','id':source.name})
+        self.assertEqual(updater.status()['state'],'succeeded',updater.status())
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute('SELECT name,color FROM tags').fetchone(),('Critical','#336699'))
+            self.assertEqual(db.execute('SELECT count(*) FROM streams_tags').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT name FROM tag_categories').fetchone()[0],'Services')
+
     def test_local_restore_creates_safety_backup_and_restores_accounts_data(self):
         source=self.manual()
         with sqlite3.connect(self.db) as db:
