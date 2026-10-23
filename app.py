@@ -51,7 +51,8 @@ def initialize():
           address TEXT PRIMARY KEY, failures INTEGER NOT NULL, started_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS streams (
           id INTEGER PRIMARY KEY, name TEXT NOT NULL, customer TEXT NOT NULL DEFAULT '',
-          outcome TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '');
+          outcome TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+          voc TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS steps (
           id INTEGER PRIMARY KEY, stream_id INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
           name TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
@@ -65,6 +66,10 @@ def initialize():
           process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
           PRIMARY KEY(step_id, process_id));
         ''')
+
+        # Existing workspaces gain an optional customer request without losing data.
+        if 'voc' not in {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}:
+            conn.execute("ALTER TABLE streams ADD COLUMN voc TEXT NOT NULL DEFAULT ''")
 
 
 BRANDING_DEFAULTS = {
@@ -153,7 +158,7 @@ def public_user(row):
 
 
 FIELDS = {
-    'streams': {'name': str, 'customer': str, 'outcome': str, 'description': str},
+    'streams': {'name': str, 'customer': str, 'outcome': str, 'description': str, 'voc': str},
     'steps': {'name': str, 'stream_id': int, 'owner': str, 'position': int,
               'work_minutes': float, 'wait_minutes': float},
     'processes': {'name': str, 'owner': str, 'description': str, 'procedure': str},

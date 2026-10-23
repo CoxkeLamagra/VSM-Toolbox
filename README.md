@@ -240,3 +240,10 @@ The default uses navy navigation, white surfaces, and a coral-red accent, inspir
 `GET /api/branding` is public so the sign-in page can display branding; it exposes only public branding and defaults. `PUT /api/branding` requires an Admin session and CSRF token and accepts the complete `name`, `tagline`, `primary`, `sidebar`, `background`, and `logo` object. Colors use `#RRGGBB`; logo is an empty string or a PNG/JPEG base64 data URL. Custom CSS, SVGs, and external logo URLs are not accepted.
 
 Validation: `python3 -m unittest discover -s tests -v` includes branding authorization, input validation, and persistence. Run `node tests/branding.cjs` with Playwright and Chromium (using the same environment options as the existing browser tests) to verify saving branding, logo rendering, theme application, sign-in branding, and mobile layout.
+
+
+### Voice of the Customer (VOC)
+
+Create or edit a value stream and fill in **Voice of the Customer (VOC)** to record what the customer is actually requesting you to deliver, preferably in their own words. For example: “Give each new starter working access to email, business applications, and secure remote access on their first day.”
+
+When supplied, VOC appears as the final draggable node after the customer outcome in the diagram. The full request appears below both the diagram and Edit flow, including for streams without steps. Admins and Editors can use **Add customer request / Edit customer request**; Viewers can read it. The optional `voc` string is supported by the stream POST, PUT, and GET APIs. Existing databases migrate automatically with an empty VOC field. VOC is stored in SQLite and included in backups.
