@@ -144,9 +144,19 @@ def download(url, limit):
 
 
 def latest_revision():
-    info = json.loads(download(f'https://api.github.com/repos/{REPOSITORY}/commits/main', 100_000))
-    revision = info.get('sha', '')
-    if not re.fullmatch('[0-9a-f]{40}', revision):
+    # The commit endpoint includes file patches, which can exceed the metadata
+    # limit for large changes. A branch ref provides only the pinned object SHA.
+    info = json.loads(
+        download(f'https://api.github.com/repos/{REPOSITORY}/git/ref/heads/main', 100_000)
+    )
+    obj = info.get('object') if isinstance(info, dict) else None
+    revision = obj.get('sha') if isinstance(obj, dict) else None
+    if (
+        not isinstance(obj, dict)
+        or obj.get('type') != 'commit'
+        or not isinstance(revision, str)
+        or not re.fullmatch('[0-9a-f]{40}', revision)
+    ):
         raise ValueError('GitHub returned an invalid commit revision')
     return revision
 

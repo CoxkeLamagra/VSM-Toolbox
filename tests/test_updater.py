@@ -58,8 +58,8 @@ class UpdaterTest(unittest.TestCase):
 
     def fake_download(self, archive):
         def response(url,limit):
-            if '/commits/' in url:
-                return json.dumps({'sha':'a'*40}).encode()
+            if '/git/ref/heads/main' in url:
+                return json.dumps({'object':{'sha':'a'*40,'type':'commit'}}).encode()
             self.assertTrue(url.endswith('/'+'a'*40))
             return archive
         return mock.patch('updater.download',side_effect=response)
@@ -151,6 +151,33 @@ class UpdaterTest(unittest.TestCase):
 
 
 class DownloadPolicyTest(unittest.TestCase):
+    def test_latest_revision_uses_compact_branch_ref_instead_of_commit_diff(self):
+        revision = 'a' * 40
+        def response(url, limit):
+            self.assertEqual(url, f'https://api.github.com/repos/{updater.REPOSITORY}/git/ref/heads/main')
+            self.assertEqual(limit, 100_000)
+            return json.dumps({'object': {'sha': revision, 'type': 'commit'}}).encode()
+        with mock.patch('updater.download', side_effect=response) as download:
+            self.assertEqual(updater.latest_revision(), revision)
+        download.assert_called_once()
+
+    def test_latest_revision_rejects_malformed_refs(self):
+        for info in (None, [], {}, {'object': []}, {'object': {'sha': 123, 'type': 'commit'}},
+                     {'object': {'sha': 'a'*40, 'type': 'tag'}}, {'object': {'sha': 'bad', 'type': 'commit'}}):
+            with self.subTest(info=info), mock.patch('updater.download', return_value=json.dumps(info).encode()):
+                with self.assertRaisesRegex(ValueError, 'invalid commit revision'):
+                    updater.latest_revision()
+
+    def test_download_still_rejects_oversized_responses(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'x' * 101
+        opener = mock.Mock()
+        opener.open.return_value = response
+        with mock.patch('urllib.request.build_opener', return_value=opener):
+            with self.assertRaisesRegex(ValueError, 'exceeds the size limit'):
+                updater.download('https://api.github.com/repos/example/repo/git/ref/heads/main', 100)
+        response.__enter__.return_value.read.assert_called_once_with(101)
+
     def test_token_is_only_attached_to_initial_github_api_request(self):
         response=mock.MagicMock()
         response.__enter__.return_value.read.return_value=b'{}'

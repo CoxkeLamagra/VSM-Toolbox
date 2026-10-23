@@ -263,3 +263,10 @@ Tag tests run with the Python regression suite and `node tests/tags.cjs` (using 
 ### Architecture and development
 
 See [Architecture and refactor notes](docs/architecture.md) for the current responsibilities, resource and page registries, transaction boundaries, deployment compatibility constraints, and verification commands.
+
+
+### Update error: download exceeds the size limit
+
+The updater previously fetched `/commits/main` to identify the newest revision. GitHub includes changed-file patches in that response, so a large commit could exceed the 100,000-byte metadata limit before the application archive was downloaded. The updater now reads the compact `/git/ref/heads/main` reference and validates its commit SHA. Application archive and extracted-size limits remain in place.
+
+For an installation affected by this error, rerun the current Debian installer (which preserves the database) or rebuild/recreate the Docker container with its existing data volume. This loads the fixed supervisor engine; a web-only application update does not replace the already-running supervisor. The failed revision lookup leaves the installed application and database unchanged.
