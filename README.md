@@ -307,7 +307,7 @@ Run the Python suite for hierarchy, numbering, migration, permission, linking, a
 
 ### Import PCF entries from CSV
 
-Open **PCF framework → Import PCF from CSV**, choose a file, and select **Upload and preview**. Import is available to Admins and Editors; Viewers cannot preview or apply uploads. Required column names (surrounding spaces are ignored):
+Select **Import from CSV** next to **Add PCF entry** on the PCF framework screen, choose a file, and select **Upload and preview**. Import is available to Admins and Editors; Viewers cannot preview or apply uploads. Required column names (surrounding spaces are ignored):
 
 | CSV column | Application field |
 | --- | --- |

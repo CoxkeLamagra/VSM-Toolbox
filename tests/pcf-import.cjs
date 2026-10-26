@@ -50,7 +50,8 @@ const { spawn } = require('node:child_process');
       .replace('Create ticket', 'Changed task');
     async function upload(text) {
       const panel = page.locator('.pcf-import');
-      if (!(await panel.evaluate((el) => el.open))) await panel.locator('summary').click();
+      if (!(await panel.isVisible()))
+        await page.getByRole('button', { name: 'Import from CSV', exact: true }).click();
       await page
         .locator('#pcfCSVFile')
         .setInputFiles({ name: 'pcf.csv', mimeType: 'text/csv', buffer: Buffer.from(text) });
@@ -59,6 +60,11 @@ const { spawn } = require('node:child_process');
     async function entries() {
       return page.evaluate(async () => await (await fetch('/api/pcf_entries')).json());
     }
+    assert.equal(await page.locator('.pcf-import').isVisible(), false);
+    assert.equal(
+      await page.locator('.title-row .detail-actions [data-action=pcf-import-toggle]').count(),
+      1,
+    );
     await upload(original);
     await page.getByRole('heading', { name: 'Review CSV import' }).waitFor();
     assert.equal((await entries()).length, 0);

@@ -739,11 +739,12 @@ function pcfIndex(entries) {
   `;
 }
 let pcfImportState = null;
+let pcfImportOpen = false;
 function pcfImportPanel() {
   if (!canEdit()) return '';
   return /* HTML */ `
-    <details class="pcf-import">
-      <summary>Import PCF from CSV</summary>
+    <section id="pcfImportPanel" class="pcf-import" ${pcfImportOpen ? '' : 'hidden'}>
+      <h2>Import PCF from CSV</h2>
       <p>
         Columns: PCF ID, Hierarchy ID, Name. Hierarchy IDs determine levels and parents (for example
         1, 1.1, 1.1.1). UTF-8 CSV, up to 256 KiB / 5000 entries.
@@ -754,14 +755,16 @@ function pcfImportPanel() {
       </label>
       <button data-action="pcf-import-preview">Upload and preview</button>
       <div id="pcfImportPreview"></div>
-    </details>
+    </section>
   `;
 }
 function renderPCFImportPreview() {
   const panel = $('#pcfImportPreview');
   if (!panel || !pcfImportState) return;
   const { preview, decisions } = pcfImportState;
-  panel.closest('details').open = true;
+  pcfImportOpen = true;
+  panel.closest('.pcf-import').hidden = false;
+  $('[data-action="pcf-import-toggle"]').setAttribute('aria-expanded', 'true');
   panel.innerHTML = /* HTML */ `
     <h2>Review CSV import</h2>
     <p>
@@ -872,6 +875,7 @@ async function applyPCFImport(button) {
       decisions,
     });
     pcfImportState = null;
+    pcfImportOpen = false;
     pcfFocus = null;
     await refresh();
     if (view === 'pcf') {
@@ -907,7 +911,9 @@ function renderPCF() {
         <h1>PCF framework</h1>
         <p>Document your APQC classifications from category to task.</p>
       </div>
-      ${canEdit() ? '<button class="primary" data-action="new-pcf">+ Add PCF entry</button>' : ''}
+      ${canEdit()
+        ? `<div class="detail-actions"><button data-action="pcf-import-toggle" aria-controls="pcfImportPanel" aria-expanded="${pcfImportOpen}">Import from CSV</button><button class="primary" data-action="new-pcf">+ Add PCF entry</button></div>`
+        : ''}
     </div>
     ${pcfImportPanel()}
     <nav class="pcf-breadcrumb" aria-label="PCF hierarchy">
@@ -1191,6 +1197,13 @@ $('#content').addEventListener('click', async (e) => {
     if (EDIT_ACTIONS.has(el.dataset.action) && !canEdit()) return;
     if (el.dataset.action.startsWith('pcf-import-')) {
       if (!canEdit()) return;
+      if (el.dataset.action === 'pcf-import-toggle') {
+        pcfImportOpen = !pcfImportOpen;
+        $('#pcfImportPanel').hidden = !pcfImportOpen;
+        el.setAttribute('aria-expanded', String(pcfImportOpen));
+        if (pcfImportOpen) $('#pcfCSVFile').focus();
+        return;
+      }
       if (el.dataset.action === 'pcf-import-preview') return await previewPCFImport(el);
       if (el.dataset.action === 'pcf-import-apply') return await applyPCFImport(el);
       if (el.dataset.action === 'pcf-import-cancel') {
