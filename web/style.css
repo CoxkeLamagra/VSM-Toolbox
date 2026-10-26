@@ -1240,3 +1240,40 @@ select:focus-visible {
     overflow-wrap: anywhere;
   }
 }
+
+.pcf-import {
+  background: white;
+  border: 1px solid #dce0ea;
+  border-radius: 10px;
+  padding: 22px;
+  margin-bottom: 24px;
+}
+.pcf-import summary {
+  cursor: pointer;
+  font-weight: 650;
+  font-size: 16px;
+}
+.pcf-import p {
+  margin: 16px 0;
+}
+.pcf-import label {
+  margin-top: 16px;
+}
+.pcf-import .detail-actions {
+  margin: 16px 0;
+}
+.pcf-import .table-wrap {
+  margin: 18px 0;
+}
+.pcf-import td {
+  max-width: 300px;
+  overflow-wrap: anywhere;
+}
+.pcf-import-result {
+  padding: 16px;
+  background: #eaf3ee;
+  border: 1px solid #c8dbce;
+  border-radius: 8px;
+  color: #263c30;
+  margin-bottom: 20px;
+}

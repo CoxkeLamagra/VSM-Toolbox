@@ -87,6 +87,7 @@ async function api(path, method = 'GET', data) {
   if (!r.ok) {
     if (r.status === 401 && session.user) {
       session = {};
+      pcfImportState = null;
       state = null;
       $('#editor').close();
       render();
@@ -737,6 +738,154 @@ function pcfIndex(entries) {
     </ul>
   `;
 }
+let pcfImportState = null;
+function pcfImportPanel() {
+  if (!canEdit()) return '';
+  return /* HTML */ `
+    <details class="pcf-import">
+      <summary>Import PCF from CSV</summary>
+      <p>
+        Columns: PCF ID, Hierarchy ID, Name. Hierarchy IDs determine levels and parents (for example
+        1, 1.1, 1.1.1). UTF-8 CSV, up to 256 KiB / 5000 entries.
+      </p>
+      <label>
+        PCF CSV file
+        <input id="pcfCSVFile" type="file" accept=".csv,text/csv" />
+      </label>
+      <button data-action="pcf-import-preview">Upload and preview</button>
+      <div id="pcfImportPreview"></div>
+    </details>
+  `;
+}
+function renderPCFImportPreview() {
+  const panel = $('#pcfImportPreview');
+  if (!panel || !pcfImportState) return;
+  const { preview, decisions } = pcfImportState;
+  panel.closest('details').open = true;
+  panel.innerHTML = /* HTML */ `
+    <h2>Review CSV import</h2>
+    <p>
+      ${preview.total} entries: ${preview.new} new and ${preview.duplicates.length} duplicate APQC
+      reference IDs. No changes have been saved.
+    </p>
+    ${preview.duplicates.length
+      ? /* HTML */ `
+          <p>
+            Yes overwrites the existing name, number, and parent. No keeps the existing entry.
+            Descriptions and value stream links are preserved.
+          </p>
+          <div class="detail-actions">
+            <button data-action="pcf-import-all-yes">Overwrite ALL</button>
+            <button data-action="pcf-import-all-no">Skip ALL</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>APQC reference ID</th>
+                  <th>Existing entry</th>
+                  <th>CSV entry</th>
+                  <th>Overwrite?</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${preview.duplicates
+                  .map(
+                    (row) => /* HTML */ `
+                      <tr>
+                        <td>${esc(row.reference)}</td>
+                        <td>${esc(row.existing_index)} ${esc(row.existing_name)}</td>
+                        <td>${esc(row.index)} ${esc(row.name)}</td>
+                        <td>
+                          <select
+                            data-pcf-decision="${esc(row.reference)}"
+                            aria-label="Overwrite ${esc(row.reference)}"
+                          >
+                            <option value="">Choose…</option>
+                            <option
+                              value="yes"
+                              ${decisions[row.reference] === 'yes' ? 'selected' : ''}
+                            >
+                              Yes
+                            </option>
+                            <option
+                              value="no"
+                              ${decisions[row.reference] === 'no' ? 'selected' : ''}
+                            >
+                              No
+                            </option>
+                          </select>
+                        </td>
+                      </tr>
+                    `,
+                  )
+                  .join('')}
+              </tbody>
+            </table>
+          </div>
+        `
+      : ''}
+    <p class="hint">
+      Missing parents, incompatible levels, and occupied indexes stop the entire import. A skipped
+      parent stays in its current location; imported children follow that retained parent.
+    </p>
+    <button
+      class="primary"
+      data-action="pcf-import-apply"
+      ${preview.duplicates.some((row) => !decisions[row.reference]) ? 'disabled' : ''}
+    >
+      Import entries
+    </button>
+    <button data-action="pcf-import-cancel">Cancel import</button>
+  `;
+}
+async function previewPCFImport(button) {
+  const file = $('#pcfCSVFile').files[0];
+  pcfImportState = null;
+  $('#pcfImportPreview').replaceChildren();
+  if (!file) throw new Error('Choose a CSV file first.');
+  if (file.size > 256 * 1024) throw new Error('CSV must be up to 256 KiB.');
+  button.disabled = true;
+  try {
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
+    } catch {
+      throw new Error('The CSV must use UTF-8 encoding.');
+    }
+    const preview = await api('pcf_import/preview', 'POST', { csv: text });
+    if (view !== 'pcf' || !canEdit()) return;
+    pcfImportState = { text, preview, decisions: Object.create(null) };
+    renderPCFImportPreview();
+  } finally {
+    button.disabled = false;
+  }
+}
+async function applyPCFImport(button) {
+  if (!pcfImportState) return;
+  button.disabled = true;
+  try {
+    const { text, preview, decisions } = pcfImportState;
+    const result = await api('pcf_import/apply', 'POST', {
+      csv: text,
+      fingerprint: preview.fingerprint,
+      decisions,
+    });
+    pcfImportState = null;
+    pcfFocus = null;
+    await refresh();
+    if (view === 'pcf') {
+      const message = document.createElement('p');
+      message.className = 'pcf-import-result';
+      message.setAttribute('role', 'status');
+      message.textContent = `CSV import complete: ${result.created} created, ${result.updated} overwritten, ${result.skipped} skipped.`;
+      $('#content').prepend(message);
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderPCF() {
   const focused = state.pcf_entries.find((entry) => entry.id === pcfFocus);
   if (!focused) pcfFocus = null;
@@ -760,6 +909,7 @@ function renderPCF() {
       </div>
       ${canEdit() ? '<button class="primary" data-action="new-pcf">+ Add PCF entry</button>' : ''}
     </div>
+    ${pcfImportPanel()}
     <nav class="pcf-breadcrumb" aria-label="PCF hierarchy">
       <button class="text-button" data-action="pcf-root">All categories</button>
       ${ancestors
@@ -867,6 +1017,7 @@ function renderPCF() {
           </div>
         `}
   `;
+  renderPCFImportPreview();
 }
 function editPCF(id, parentId) {
   const entry = state.pcf_entries.find((item) => item.id === id);
@@ -1021,12 +1172,45 @@ $('#editor').addEventListener('close', () => {
   $('#fields').replaceChildren();
   saveForm = null;
 });
+$('#content').addEventListener('change', (event) => {
+  const reference = event.target.dataset.pcfDecision;
+  if (reference && pcfImportState) {
+    pcfImportState.decisions[reference] = event.target.value;
+    const button = $('[data-action="pcf-import-apply"]');
+    if (button)
+      button.disabled = pcfImportState.preview.duplicates.some(
+        (row) => !pcfImportState.decisions[row.reference],
+      );
+  }
+});
 $('#content').addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const id = Number(el.dataset.id);
   try {
     if (EDIT_ACTIONS.has(el.dataset.action) && !canEdit()) return;
+    if (el.dataset.action.startsWith('pcf-import-')) {
+      if (!canEdit()) return;
+      if (el.dataset.action === 'pcf-import-preview') return await previewPCFImport(el);
+      if (el.dataset.action === 'pcf-import-apply') return await applyPCFImport(el);
+      if (el.dataset.action === 'pcf-import-cancel') {
+        pcfImportState = null;
+        $('#pcfImportPreview').replaceChildren();
+        return;
+      }
+      if (
+        pcfImportState &&
+        ['pcf-import-all-yes', 'pcf-import-all-no'].includes(el.dataset.action)
+      ) {
+        const choice = el.dataset.action === 'pcf-import-all-yes' ? 'yes' : 'no';
+        pcfImportState.decisions = Object.fromEntries(
+          pcfImportState.preview.duplicates.map((row) => [row.reference, choice]),
+        );
+        renderPCFImportPreview();
+        return;
+      }
+    }
+
     if (el.dataset.action === 'pcf-index' || el.dataset.action === 'pcf-tiles') {
       pcfMode = el.dataset.action === 'pcf-index' ? 'index' : 'tiles';
       return render();
@@ -1268,6 +1452,7 @@ function render() {
     $('#logout').onclick = async () => {
       try {
         await api('auth/logout', 'POST', {});
+        pcfImportState = null;
         session = {};
         selected = null;
         view = 'streams';

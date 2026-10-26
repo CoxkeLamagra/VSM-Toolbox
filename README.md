@@ -304,3 +304,36 @@ API: authenticated `GET /api/pcf_entries` and `GET /api/pcf_entries/{id}` return
 For a Process Group, use `"entry_type":"Process Group"` and the Category's ID as `parent_id`. The same rule applies at each lower level. Stream POST/PUT requests accept `pcf_ids`, an array of existing PCF entry IDs. Omitting it preserves links; `[]` clears them. Responses include `pcf_ids`; `/api/data` also includes `pcf_entries`. Content, tags, and PCF links save in one transaction.
 
 Run the Python suite for hierarchy, numbering, migration, permission, linking, and restore checks. `node tests/pcf.cjs` exercises the complete five-level hierarchy, both views, stream links, search, renumbering, and Viewer/mobile access using the existing Playwright/Chromium environment options.
+
+### Import PCF entries from CSV
+
+Open **PCF framework → Import PCF from CSV**, choose a file, and select **Upload and preview**. Import is available to Admins and Editors; Viewers cannot preview or apply uploads. Required column names (surrounding spaces are ignored):
+
+| CSV column | Application field |
+| --- | --- |
+| `PCF ID` | APQC reference ID |
+| `Hierarchy ID` | Full hierarchy index; its last component becomes the entry's sibling number |
+| `Name` | Entry name |
+
+```csv
+PCF ID,Hierarchy ID,Name
+10001,1.0,IT Management
+10002,1.1,Fault to Restoration
+10003,1.1.1,Incident Management
+10004,1.1.1.1,Register Incident
+10005,1.1.1.1.1,Create ticket
+```
+
+One through five numeric components identify Category, Process Group, Process, Activity, and Task respectively. A top-level APQC index such as `1.0` is accepted as category `1`; ordinary `1` is also accepted. Parents must be included in the CSV or already exist at the requested index. Rows can be in any order. The importer supports UTF-8 (with or without BOM), quoted fields and multiline names, and comma/semicolon/tab separators. Files are limited to 256 KiB and 5000 entries. PCF ID and Name are required and limited to 200 characters; numbers must be positive integers up to 999999. Extra columns are ignored.
+
+The preview makes no changes. APQC reference IDs are compared after trimming whitespace, without case sensitivity. Each duplicate shows the existing entry and the incoming name/index with a **Yes / No** overwrite selector. **Overwrite ALL** sets every duplicate to Yes; **Skip ALL** sets every duplicate to No. Individual choices can still be changed afterward. Select **Import entries** to save new entries and apply your choices.
+
+- **Yes** updates the existing name, reference, hierarchy number, and parent. Its ID, description, and value stream links are preserved.
+- **No** retains the existing entry. Imported children referencing that CSV parent attach to the retained entry, so their resulting index follows its actual location.
+- New reference IDs are created. A different reference already occupying the requested index is never silently overwritten; the whole import stops with an error.
+- Repeated references or normalized indexes within the file, ambiguous existing reference IDs, missing parents, and incompatible final hierarchies are rejected. Resolve those ambiguities before importing.
+- A successful import is atomic. If validation or writing fails, all its changes roll back. If any PCF entry changed after preview, preview again before applying. CSV text is processed locally and is not retained as an uploaded file; the resulting entries remain in SQLite and normal application backups.
+
+API endpoints: `POST /api/pcf_import/preview` accepts `{"csv":"..."}` and returns totals, duplicate details, and a framework `fingerprint`. `POST /api/pcf_import/apply` accepts the same CSV, that fingerprint, and a `decisions` object mapping every duplicate's incoming reference ID to `"yes"` or `"no"`. Both endpoints require an Admin/Editor session and CSRF token. The apply response contains `created`, `updated`, and `skipped` counts.
+
+Tests: `python3 -m unittest discover -s tests -v` and `node tests/pcf-import.cjs` using the existing browser-test environment options.
