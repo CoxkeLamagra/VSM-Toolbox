@@ -1124,3 +1124,119 @@ select:focus-visible {
   fill: var(--tag-ink);
   font-size: 10px;
 }
+
+/* Process Classification Framework hierarchy and drill-down. */
+.pcf-breadcrumb {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.pcf-detail,
+.pcf-tile {
+  background: white;
+  border: 1px solid #dce0ea;
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+.pcf-detail h2 {
+  margin: 15px 0;
+}
+.pcf-description {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 14px 0 22px;
+  color: #33405e;
+}
+.pcf-associated {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid #edf0f5;
+  margin-top: 22px;
+  padding-top: 18px;
+}
+.pcf-associated b {
+  width: 100%;
+}
+.pcf-number {
+  font-variant-numeric: tabular-nums;
+  color: #535f7b;
+  margin-right: 8px;
+}
+.pcf-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0;
+}
+.pcf-tile h3 {
+  margin: 0;
+}
+.pcf-tile-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 17px;
+  font-weight: 650;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.pcf-tile .card-meta {
+  margin-top: auto;
+}
+.pcf-index {
+  list-style: none;
+  padding-left: 24px;
+}
+.pcf-index > li {
+  padding: 12px 0;
+  border-top: 1px solid #e1e5ee;
+}
+.pcf-index summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.pcf-index .pill {
+  margin-left: 8px;
+}
+.pcf-index-actions {
+  display: flex;
+  gap: 18px;
+  margin: 10px 0;
+}
+.pcf-linked {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.pcf-link-list {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pcf-option small {
+  display: block;
+  color: #535f7b;
+  margin-top: 4px;
+}
+.pcf-option input {
+  flex-shrink: 0;
+}
+.pcf-picker {
+  max-height: 320px;
+}
+@media (max-width: 800px) {
+  .pcf-index {
+    padding-left: 10px;
+  }
+  .pcf-detail,
+  .pcf-tile {
+    padding: 18px;
+  }
+  .pcf-number {
+    overflow-wrap: anywhere;
+  }
+}

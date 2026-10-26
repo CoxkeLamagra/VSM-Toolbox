@@ -76,3 +76,9 @@ prettier --write web/app.js web/style.css web/index.html tests/frontend.cjs
 ## Remaining boundaries
 
 HTML templates still use the existing escaped-string rendering approach. A component framework or build pipeline has not been introduced. The CSS retains its existing cascade, including branding overrides, to avoid changing presentation during a structural refactor. Future changes should use the resource/page registries and repository boundary instead of adding parallel validation or navigation branches.
+
+## PCF hierarchy extension
+
+`pcf_entries` is a normal registered content resource with a strict five-level parent model. Each entry stores its local sibling number and a stable ID; serialization computes full indexes from the ancestor chain. Root and sibling numbers are constrained in SQLite. Repository validation enforces compatible parent/child types and rejects deletions that would discard a subtree. The `stream_pcf` join table supports explicit many-to-many stream classifications and cascades leaf/stream link cleanup. Resource serialization batches these links, and stream mutations save content, tags, and classifications together.
+
+The frontend's registered `pcf` page offers a numbered, expandable index and a tile drill-down view. Shared stream forms serialize a separate PCF selector; selectors never change tag assignments. PCF entries are classifications, independent of process-library execution documentation. The runtime manifest remains unchanged.

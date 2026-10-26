@@ -44,6 +44,23 @@ assert.deepEqual(
   { name: 'Service', tag_ids: [] },
 );
 assert.deepEqual(values([['name', 'Category']]), { name: 'Category' });
+assert.deepEqual(
+  values([
+    ['name', 'Service'],
+    ['_pcf_picker', '1'],
+    ['_pcf_4', 'on'],
+    ['_pcf_8', 'on'],
+    ['_tag_picker', '1'],
+  ]),
+  { name: 'Service', tag_ids: [], pcf_ids: [4, 8] },
+);
+assert.deepEqual(
+  values([
+    ['name', 'Service'],
+    ['_pcf_picker', '1'],
+  ]),
+  { name: 'Service', pcf_ids: [] },
+);
 context.syncThemeStylesheet();
 const initial = href;
 context.syncThemeStylesheet();

@@ -270,3 +270,37 @@ See [Architecture and refactor notes](docs/architecture.md) for the current resp
 The updater previously fetched `/commits/main` to identify the newest revision. GitHub includes changed-file patches in that response, so a large commit could exceed the 100,000-byte metadata limit before the application archive was downloaded. The updater now reads the compact `/git/ref/heads/main` reference and validates its commit SHA. Application archive and extracted-size limits remain in place.
 
 For an installation affected by this error, rerun the current Debian installer (which preserves the database) or rebuild/recreate the Docker container with its existing data volume. This loads the fixed supervisor engine; a web-only application update does not replace the already-running supervisor. The failed revision lookup leaves the installed application and database unchanged.
+
+### PCF framework
+
+Open **PCF framework** in the workspace menu to maintain a manually entered APQC Process Classification Framework. The screen starts empty; it does not download or ship APQC reference content. Admins and Editors can add, edit, move, renumber, and remove entries; Viewers can browse both views.
+
+The hierarchy is enforced:
+
+| Entry type | Required parent |
+| --- | --- |
+| Category | None; top level |
+| Process Group | Category |
+| Process | Process Group |
+| Activity | Process |
+| Task | Activity |
+
+Each entry has a name, a positive **Index number** unique among siblings, an optional APQC reference ID, and a description. Categories can be numbered explicitly. The displayed index combines each entry's number with its ancestors, for example `1 → 1.1 → 1.1.1 → 1.1.1.1 → 1.1.1.1.1`. Changing a number or moving an entry recalculates its descendants' displayed indexes; stable entry IDs preserve existing stream links. Entries with children must have those children moved or removed before deletion. Removing a leaf entry removes its stream links without deleting streams.
+
+- **Index** displays an expandable hierarchy. Select **Details / drill down** to read an entry and its direct stream links.
+- **Tiles** displays the current level. Select a tile to drill down; use the breadcrumb to return to an ancestor or **All categories**.
+- **Add PCF entry** lets you choose any of the five types and an existing parent of the required type. **Add Process Group / Process / Activity / Task** in an entry's detail screen preselects its parent.
+
+Create or edit a value stream to select several **Linked PCF entries** at any level. Use the search field to filter by index, name, or reference; filtering does not clear checked entries. The stream's **PCF classifications** panel opens the linked classifications. A PCF detail screen lists value streams linked directly to that entry. Links do not implicitly select ancestors or descendants. PCF classifications are separate from the existing reusable process library and tags.
+
+All hierarchy data and links remain in SQLite and are included in application backups. Existing installations gain the new tables automatically, preserving current content. No additional runtime files or dependencies are required.
+
+API: authenticated `GET /api/pcf_entries` and `GET /api/pcf_entries/{id}` return `id`, `name`, `entry_type`, `parent_id`, `number`, `reference`, `description`, and computed `index`. Admins and Editors can POST, PUT, and DELETE with their CSRF token. Example Category body:
+
+```json
+{"name":"IT Management","entry_type":"Category","parent_id":null,"number":1}
+```
+
+For a Process Group, use `"entry_type":"Process Group"` and the Category's ID as `parent_id`. The same rule applies at each lower level. Stream POST/PUT requests accept `pcf_ids`, an array of existing PCF entry IDs. Omitting it preserves links; `[]` clears them. Responses include `pcf_ids`; `/api/data` also includes `pcf_entries`. Content, tags, and PCF links save in one transaction.
+
+Run the Python suite for hierarchy, numbering, migration, permission, linking, and restore checks. `node tests/pcf.cjs` exercises the complete five-level hierarchy, both views, stream links, search, renumbering, and Viewer/mobile access using the existing Playwright/Chromium environment options.

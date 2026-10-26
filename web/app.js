@@ -126,6 +126,7 @@ const duration = (n) => `${Number(n.toFixed(1))} min`;
 const VIEWS = {
   streams: { render: renderContent },
   processes: { render: renderContent },
+  pcf: { render: renderPCF },
   tags: { adminOnly: true, render: renderTags },
   branding: { adminOnly: true, render: renderBranding },
   accounts: {
@@ -177,6 +178,12 @@ function formValues(form) {
       .filter((key) => key.startsWith('_tag_') && key !== '_tag_picker')
       .map((key) => Number(key.slice(5)));
     for (const key of Object.keys(data)) if (key.startsWith('_tag_')) delete data[key];
+  }
+  if (data._pcf_picker) {
+    data.pcf_ids = Object.keys(data)
+      .filter((key) => key.startsWith('_pcf_') && key !== '_pcf_picker')
+      .map((key) => Number(key.slice(5)));
+    for (const key of Object.keys(data)) if (key.startsWith('_pcf_')) delete data[key];
   }
   return data;
 }
@@ -364,7 +371,7 @@ function renderStream() {
         <button data-action="flow-view" aria-pressed="${streamMode === 'flow'}">Edit flow</button>
       </div>
     </div>
-    ${streamMode === 'diagram' ? diagramShell(items) : flowMarkup}
+    ${streamMode === 'diagram' ? diagramShell(items) : flowMarkup} ${pcfStreamLinks(stream)}
     <section class="voc-panel" aria-label="Voice of the Customer">
       <div class="section-row">
         <h2>Voice of the Customer (VOC)</h2>
@@ -612,6 +619,329 @@ function editCategory(id) {
     (data) => api('tag_categories' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data),
   );
 }
+let pcfMode = 'tiles',
+  pcfFocus = null;
+const PCF_TYPES = ['Category', 'Process Group', 'Process', 'Activity', 'Task'];
+function pcfChildren(parentId) {
+  return state.pcf_entries
+    .filter((entry) => entry.parent_id === parentId)
+    .sort((a, b) => a.number - b.number);
+}
+function pcfLabel(entry) {
+  return `${entry.index} ${entry.name}`;
+}
+function pcfPicker(stream) {
+  return /* HTML */ `
+    <fieldset class="tag-picker pcf-picker">
+      <legend>Linked PCF entries</legend>
+      <input type="hidden" name="_pcf_picker" value="1" />
+      <label>
+        Find PCF entries
+        <input type="search" id="pcfLinkSearch" placeholder="Search by index, name, or reference" />
+      </label>
+      <div id="pcfLinkOptions">
+        ${state.pcf_entries
+          .map(
+            (entry) => /* HTML */ `
+              <label
+                class="check pcf-option"
+                data-pcf-search="${esc((pcfLabel(entry) + ' ' + entry.reference).toLowerCase())}"
+              >
+                <input
+                  type="checkbox"
+                  name="_pcf_${entry.id}"
+                  ${(stream.pcf_ids || []).includes(entry.id) ? 'checked' : ''}
+                />
+                <span>
+                  <b>${esc(pcfLabel(entry))}</b>
+                  <small>${esc(entry.entry_type)}</small>
+                </span>
+              </label>
+            `,
+          )
+          .join('') || '<p>No PCF entries yet. Create them in the PCF framework screen.</p>'}
+      </div>
+    </fieldset>
+  `;
+}
+function pcfStreamLinks(stream) {
+  const entries = state.pcf_entries.filter((entry) => (stream.pcf_ids || []).includes(entry.id));
+  return /* HTML */ `
+    <section class="pcf-linked context">
+      <div>
+        <b>PCF CLASSIFICATIONS</b>
+        <div class="pcf-link-list">
+          ${entries
+            .map(
+              (entry) => /* HTML */ `
+                <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
+                  ${esc(pcfLabel(entry))}
+                </button>
+              `,
+            )
+            .join('') || '<p>No PCF classifications linked.</p>'}
+        </div>
+      </div>
+      ${canEdit()
+        ? '<button class="text-button" data-action="edit-stream">Manage PCF links</button>'
+        : ''}
+    </section>
+  `;
+}
+function pcfActions(entry) {
+  if (!canEdit()) return '';
+  return /* HTML */ `
+    <div class="detail-actions">
+      ${entry.entry_type !== 'Task'
+        ? /* HTML */ `
+            <button data-action="new-pcf" data-parent="${entry.id}">
+              + Add ${PCF_TYPES[PCF_TYPES.indexOf(entry.entry_type) + 1]}
+            </button>
+          `
+        : ''}
+      <button data-action="edit-pcf" data-id="${entry.id}">Edit entry</button>
+      <button class="danger" data-action="delete-pcf" data-id="${entry.id}">Delete entry</button>
+    </div>
+  `;
+}
+function pcfIndex(entries) {
+  return /* HTML */ `
+    <ul class="pcf-index">
+      ${entries
+        .map((entry) => {
+          const children = pcfChildren(entry.id);
+          return /* HTML */ `
+            <li>
+              ${children.length ? '<details open><summary>' : '<div class="pcf-leaf">'}
+              <span class="pcf-number">${esc(entry.index)}</span>
+              <strong>${esc(entry.name)}</strong>
+              <span class="pill">${esc(entry.entry_type)}</span>
+              ${children.length ? '</summary>' : ''}
+              <div class="pcf-index-actions">
+                <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
+                  Details / drill down
+                </button>
+                ${canEdit()
+                  ? /* HTML */ `
+                      <button class="text-button" data-action="edit-pcf" data-id="${entry.id}">
+                        Edit
+                      </button>
+                    `
+                  : ''}
+              </div>
+              ${children.length ? pcfIndex(children) + '</details>' : '</div>'}
+            </li>
+          `;
+        })
+        .join('')}
+    </ul>
+  `;
+}
+function renderPCF() {
+  const focused = state.pcf_entries.find((entry) => entry.id === pcfFocus);
+  if (!focused) pcfFocus = null;
+  const entries = pcfChildren(pcfFocus),
+    ancestors = [];
+  let current = focused;
+  while (current) {
+    ancestors.unshift(current);
+    current = state.pcf_entries.find((entry) => entry.id === current.parent_id);
+  }
+  const linked = focused
+    ? state.streams.filter((stream) => (stream.pcf_ids || []).includes(focused.id))
+    : [];
+  $('#breadcrumb').textContent = 'PCF framework';
+  $('#content').innerHTML = /* HTML */ `
+    <div class="eyebrow">PROCESS CLASSIFICATION FRAMEWORK</div>
+    <div class="title-row">
+      <div>
+        <h1>PCF framework</h1>
+        <p>Document your APQC classifications from category to task.</p>
+      </div>
+      ${canEdit() ? '<button class="primary" data-action="new-pcf">+ Add PCF entry</button>' : ''}
+    </div>
+    <nav class="pcf-breadcrumb" aria-label="PCF hierarchy">
+      <button class="text-button" data-action="pcf-root">All categories</button>
+      ${ancestors
+        .map(
+          (entry) => /* HTML */ `
+            <span aria-hidden="true">/</span>
+            <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
+              ${esc(pcfLabel(entry))}
+            </button>
+          `,
+        )
+        .join('')}
+    </nav>
+    ${focused
+      ? /* HTML */ `
+          <section class="pcf-detail">
+            <span class="pill">${esc(focused.entry_type)}</span>
+            <h2>${esc(pcfLabel(focused))}</h2>
+            ${focused.reference
+              ? /* HTML */ `
+                  <p>APQC reference: ${esc(focused.reference)}</p>
+                `
+              : ''}
+            <p class="pcf-description">${esc(focused.description || 'No description provided.')}</p>
+            ${pcfActions(focused)}
+            <div class="pcf-associated">
+              <b>Linked value streams</b>
+              ${linked
+                .map(
+                  (stream) => /* HTML */ `
+                    <button class="text-button" data-action="pcf-stream" data-id="${stream.id}">
+                      ${esc(stream.name)}
+                    </button>
+                  `,
+                )
+                .join('') || '<p>No value streams linked directly to this entry.</p>'}
+            </div>
+          </section>
+        `
+      : ''}
+    <div class="section-row">
+      <h2>
+        ${focused
+          ? focused.entry_type === 'Task'
+            ? 'Task details'
+            : 'Child entries'
+          : 'Categories'}
+      </h2>
+      <div class="view-switch" role="group" aria-label="PCF view">
+        <button data-action="pcf-tiles" aria-pressed="${pcfMode === 'tiles'}">Tiles</button>
+        <button data-action="pcf-index" aria-pressed="${pcfMode === 'index'}">Index</button>
+      </div>
+    </div>
+    ${entries.length
+      ? pcfMode === 'index'
+        ? pcfIndex(entries)
+        : /* HTML */ `
+            <div class="grid pcf-grid">
+              ${entries
+                .map(
+                  (entry) => /* HTML */ `
+                    <article class="pcf-tile" data-action="open-pcf" data-id="${entry.id}">
+                      <span class="pill">${esc(entry.entry_type)}</span>
+                      <h3>
+                        <button class="pcf-tile-open" data-action="open-pcf" data-id="${entry.id}">
+                          <span class="pcf-number">${esc(entry.index)}</span>
+                          ${esc(entry.name)}
+                        </button>
+                      </h3>
+                      <p>
+                        ${esc(
+                          entry.description ||
+                            entry.reference ||
+                            'Open to explore this classification.',
+                        )}
+                      </p>
+                      <div class="card-meta">
+                        <span>${pcfChildren(entry.id).length} child entries</span>
+                        <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
+                          Drill down →
+                        </button>
+                      </div>
+                    </article>
+                  `,
+                )
+                .join('')}
+            </div>
+          `
+      : /* HTML */ `
+          <div class="empty">
+            <h2>${focused ? 'No child entries' : 'Start your PCF framework'}</h2>
+            <p>
+              ${focused?.entry_type === 'Task'
+                ? 'Task is the final classification level.'
+                : 'Add entries manually to build your numbered process hierarchy.'}
+            </p>
+            ${canEdit() && (!focused || focused.entry_type !== 'Task')
+              ? /* HTML */ `
+                  <button data-action="new-pcf" ${focused ? `data-parent="${focused.id}"` : ''}>
+                    + Add
+                    ${focused ? PCF_TYPES[PCF_TYPES.indexOf(focused.entry_type) + 1] : 'Category'}
+                  </button>
+                `
+              : ''}
+          </div>
+        `}
+  `;
+}
+function editPCF(id, parentId) {
+  const entry = state.pcf_entries.find((item) => item.id === id);
+  const parent = state.pcf_entries.find((item) => item.id === parentId);
+  const kind =
+    entry?.entry_type ||
+    (parent ? PCF_TYPES[PCF_TYPES.indexOf(parent.entry_type) + 1] : 'Category');
+  modal(
+    entry ? 'Edit PCF entry' : 'Add PCF entry',
+    field('name', 'Entry name', entry?.name) +
+      /* HTML */ `
+        <label>
+          Entry type
+          <select name="entry_type" id="pcfEntryType" aria-label="Entry type">
+            ${PCF_TYPES.map(
+              (type) => /* HTML */ `
+                <option ${type === kind ? 'selected' : ''}>${type}</option>
+              `,
+            ).join('')}
+          </select>
+        </label>
+        <label>
+          Parent entry
+          <select name="parent_id" id="pcfParent" aria-label="Parent entry"></select>
+        </label>
+      ` +
+      field('number', 'Index number', entry?.number || 1, 'number') +
+      '<p class="hint">A positive number unique among siblings. The full index is built from the parent chain.</p>' +
+      field('reference', 'APQC reference ID (optional)', entry?.reference) +
+      field('description', 'Description', entry?.description, 'textarea'),
+    async (data) => {
+      data.number = Number(data.number);
+      data.parent_id = data.parent_id ? Number(data.parent_id) : null;
+      await api('pcf_entries' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
+      if (!id && parentId) pcfFocus = parentId;
+    },
+  );
+  const updateParents = (selectedParent) => {
+    const level = PCF_TYPES.indexOf($('#pcfEntryType').value);
+    const options = state.pcf_entries.filter(
+      (item) => item.entry_type === PCF_TYPES[level - 1] && item.id !== id,
+    );
+    $('#pcfParent').innerHTML = level
+      ? '<option value="">Choose a parent</option>' +
+        options
+          .map(
+            (item) => /* HTML */ `
+              <option value="${item.id}" ${item.id === selectedParent ? 'selected' : ''}>
+                ${esc(pcfLabel(item))}
+              </option>
+            `,
+          )
+          .join('')
+      : '<option value="">No parent (top level)</option>';
+    $('#pcfParent').required = level > 0;
+    $('#pcfParent').disabled = level === 0;
+    if (!entry)
+      $('#fields [name=number]').value =
+        Math.max(0, ...pcfChildren(selectedParent || null).map((item) => item.number)) + 1;
+  };
+  updateParents(entry?.parent_id || parentId || null);
+  $('#pcfEntryType').onchange = () => updateParents(null);
+  $('#pcfParent').onchange = () => {
+    if (!entry)
+      $('#fields [name=number]').value =
+        Math.max(
+          0,
+          ...pcfChildren(Number($('#pcfParent').value) || null).map((item) => item.number),
+        ) + 1;
+  };
+  $('#fields [name=number]').min = '1';
+  $('#fields [name=number]').step = '1';
+  $('#fields [name=number]').max = '999999';
+}
+
 function editStream(id) {
   const s = state.streams.find((s) => s.id === id) || {};
   modal(
@@ -622,7 +952,8 @@ function editStream(id) {
       field('description', 'Description', s.description, 'textarea') +
       field('voc', 'Voice of the Customer (VOC)', s.voc, 'textarea') +
       '<p class="hint">What is the customer actually asking us to deliver? Use their own words where possible, for example: “Give every new starter working access to their tools on day one.”</p>' +
-      tagPicker(s),
+      tagPicker(s) +
+      pcfPicker(s),
     async (data) => {
       const result = await api('streams' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
       selected = result.id;
@@ -677,6 +1008,14 @@ $('#form').addEventListener('submit', async (e) => {
     button.disabled = false;
   }
 });
+$('#fields').addEventListener('input', (event) => {
+  if (event.target.id === 'pcfLinkSearch') {
+    const query = event.target.value.toLowerCase();
+    $('#fields')
+      .querySelectorAll('[data-pcf-search]')
+      .forEach((option) => (option.hidden = !option.dataset.pcfSearch.includes(query)));
+  }
+});
 $('#closeDialog').onclick = $('#cancelDialog').onclick = () => $('#editor').close();
 $('#editor').addEventListener('close', () => {
   $('#fields').replaceChildren();
@@ -688,6 +1027,41 @@ $('#content').addEventListener('click', async (e) => {
   const id = Number(el.dataset.id);
   try {
     if (EDIT_ACTIONS.has(el.dataset.action) && !canEdit()) return;
+    if (el.dataset.action === 'pcf-index' || el.dataset.action === 'pcf-tiles') {
+      pcfMode = el.dataset.action === 'pcf-index' ? 'index' : 'tiles';
+      return render();
+    }
+    if (el.dataset.action === 'pcf-root') {
+      pcfFocus = null;
+      return render();
+    }
+    if (el.dataset.action === 'open-pcf') {
+      view = 'pcf';
+      pcfFocus = id;
+      return render();
+    }
+    if (el.dataset.action === 'pcf-stream') {
+      view = 'streams';
+      selected = id;
+      streamMode = 'diagram';
+      return render();
+    }
+    if (['new-pcf', 'edit-pcf', 'delete-pcf'].includes(el.dataset.action)) {
+      if (!canEdit()) return;
+      if (el.dataset.action === 'new-pcf') return editPCF(null, Number(el.dataset.parent) || null);
+      if (el.dataset.action === 'edit-pcf') return editPCF(id);
+      if (
+        !confirm(
+          'Delete this PCF entry? Its value stream links will be removed. Entries with children must have their children moved or removed first.',
+        )
+      )
+        return;
+      await api('pcf_entries/' + id, 'DELETE');
+      if (pcfFocus === id) pcfFocus = null;
+      await refresh();
+      return;
+    }
+
     if (
       [
         'new-tag',

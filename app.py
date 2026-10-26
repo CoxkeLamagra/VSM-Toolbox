@@ -74,6 +74,19 @@ def initialize():
           id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
           color TEXT NOT NULL DEFAULT '#e6404d',
           category_id INTEGER REFERENCES tag_categories(id) ON DELETE SET NULL);
+        CREATE TABLE IF NOT EXISTS pcf_entries (
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL,
+          entry_type TEXT NOT NULL CHECK(entry_type IN ('Category','Process Group','Process','Activity','Task')),
+          parent_id INTEGER REFERENCES pcf_entries(id) ON DELETE RESTRICT,
+          number INTEGER NOT NULL CHECK(number>0 AND number<=999999),
+          reference TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+          CHECK((entry_type='Category' AND parent_id IS NULL) OR (entry_type!='Category' AND parent_id IS NOT NULL)),
+          UNIQUE(parent_id,number));
+        CREATE UNIQUE INDEX IF NOT EXISTS pcf_category_number ON pcf_entries(number) WHERE parent_id IS NULL;
+        CREATE TABLE IF NOT EXISTS stream_pcf (
+          stream_id INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+          pcf_id INTEGER NOT NULL REFERENCES pcf_entries(id) ON DELETE CASCADE,
+          PRIMARY KEY(stream_id,pcf_id));
         CREATE TABLE IF NOT EXISTS step_processes (
           step_id INTEGER NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
           process_id INTEGER NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
@@ -197,7 +210,20 @@ class ResourceSpec:
     order_by: str = 'id'
 
 
+PCF_TYPES = ('Category', 'Process Group', 'Process', 'Activity', 'Task')
+
+
 RESOURCES = {
+    'pcf_entries': ResourceSpec(
+        {
+            'name': str,
+            'entry_type': str,
+            'parent_id': int,
+            'number': int,
+            'reference': str,
+            'description': str,
+        }
+    ),
     'tags': ResourceSpec({'name': str, 'color': str, 'category_id': int}, ('Admin',)),
     'tag_categories': ResourceSpec({'name': str}, ('Admin',)),
     'streams': ResourceSpec(
@@ -264,18 +290,39 @@ class ContentRepository:
 
     def serialize(self, table, rows, ident=None):
         records = [dict(row) for row in rows]
-        if not records or not RESOURCES[table].tagged:
+        if not records:
             return records
-        assignments = {}
-        query = f'SELECT entity_id, tag_id FROM {table}_tags'
-        parameters = ()
-        if ident is not None:
-            query += ' WHERE entity_id=?'
-            parameters = (ident,)
-        for entity_id, tag_id in self.conn.execute(query + ' ORDER BY tag_id', parameters):
-            assignments.setdefault(entity_id, []).append(tag_id)
-        for record in records:
-            record['tag_ids'] = assignments.get(record['id'], [])
+        if table == 'pcf_entries':
+            entries = {
+                row['id']: dict(row)
+                for row in self.conn.execute('SELECT id,parent_id,number FROM pcf_entries')
+            }
+            for record in records:
+                path, current = [], record['id']
+                while current is not None:
+                    ancestor = entries[current]
+                    path.append(str(ancestor['number']))
+                    current = ancestor['parent_id']
+                record['index'] = '.'.join(reversed(path))
+            records.sort(key=lambda row: tuple(map(int, row['index'].split('.'))))
+        relationships = []
+        if RESOURCES[table].tagged:
+            relationships.append((f'{table}_tags', 'entity_id', 'tag_id', 'tag_ids'))
+        if table == 'streams':
+            relationships.append(('stream_pcf', 'stream_id', 'pcf_id', 'pcf_ids'))
+        for join_table, entity_key, item_key, output in relationships:
+            assignments = {}
+            query = f'SELECT {entity_key}, {item_key} FROM {join_table}'
+            parameters = ()
+            if ident is not None:
+                query += f' WHERE {entity_key}=?'
+                parameters = (ident,)
+            for entity_id, item_id in self.conn.execute(
+                query + f' ORDER BY {item_key}', parameters
+            ):
+                assignments.setdefault(entity_id, []).append(item_id)
+            for record in records:
+                record[output] = assignments.get(record['id'], [])
         return records
 
     def list(self, table, ordered=False):
@@ -301,6 +348,12 @@ class ContentRepository:
     def validate(self, table, method, values):
         spec = RESOURCES[table]
         tag_ids = None
+        pcf_ids = None
+        if table == 'streams' and 'pcf_ids' in values:
+            pcf_ids = integer_ids(values.pop('pcf_ids'), 'pcf_ids')
+            existing = {row[0] for row in self.conn.execute('SELECT id FROM pcf_entries')}
+            if not set(pcf_ids) <= existing:
+                raise ValueError('Unknown PCF entry')
         if spec.tagged and 'tag_ids' in values:
             tag_ids = integer_ids(values.pop('tag_ids'), 'tag_ids')
             existing = {row[0] for row in self.conn.execute('SELECT id FROM tags')}
@@ -330,7 +383,10 @@ class ContentRepository:
             kind = spec.fields[key]
             if kind is str and (not isinstance(value, str) or len(value) > 20000):
                 raise ValueError(key + ' must be text of at most 20000 characters')
-            if table == 'tags' and key == 'category_id' and value is None:
+            if (
+                (table == 'tags' and key == 'category_id')
+                or (table == 'pcf_entries' and key == 'parent_id')
+            ) and value is None:
                 continue
             if kind is int and type(value) is not int:
                 raise ValueError(key + ' must be an integer')
@@ -340,9 +396,9 @@ class ContentRepository:
                 raise ValueError(key + ' must be a finite nonnegative number')
         if 'name' in values and not values['name'].strip():
             raise ValueError('Name cannot be empty')
-        if not values and tag_ids is None:
+        if not values and tag_ids is None and pcf_ids is None:
             raise ValueError('No fields supplied')
-        return tag_ids
+        return tag_ids, pcf_ids
 
     def replace_process_links(self, step_id, data):
         if not self.conn.execute('SELECT id FROM steps WHERE id=?', (step_id,)).fetchone():
@@ -374,10 +430,19 @@ class ContentRepository:
         if ident is not None:
             self.get(table, ident)
         if method == 'DELETE':
+            if (
+                table == 'pcf_entries'
+                and self.conn.execute(
+                    'SELECT 1 FROM pcf_entries WHERE parent_id=?', (ident,)
+                ).fetchone()
+            ):
+                raise ApiError(409, 'Remove or move child entries before deleting this PCF entry')
             self.conn.execute(f'DELETE FROM {table} WHERE id=?', (ident,))
             return {'deleted': ident}
         values = dict(data)
-        tag_ids = self.validate(table, method, values)
+        tag_ids, pcf_ids = self.validate(table, method, values)
+        if table == 'pcf_entries':
+            self.validate_pcf(ident, values)
         if method == 'POST':
             columns = ','.join(values)
             placeholders = ','.join('?' for _ in values)
@@ -396,7 +461,45 @@ class ContentRepository:
                 f'INSERT INTO {table}_tags VALUES (?,?)',
                 [(ident, tag_id) for tag_id in set(tag_ids)],
             )
+        if pcf_ids is not None:
+            self.conn.execute('DELETE FROM stream_pcf WHERE stream_id=?', (ident,))
+            self.conn.executemany(
+                'INSERT INTO stream_pcf VALUES (?,?)', [(ident, pcf_id) for pcf_id in set(pcf_ids)]
+            )
         return self.get(table, ident)
+
+    def validate_pcf(self, ident, values):
+        merged = {**(self.get('pcf_entries', ident) if ident is not None else {}), **values}
+        kind = merged.get('entry_type')
+        if kind not in PCF_TYPES:
+            raise ValueError('Choose a valid PCF entry type')
+        number = merged.get('number')
+        if type(number) is not int or not 1 <= number <= 999999:
+            raise ValueError('PCF number must be an integer between 1 and 999999')
+        if len(merged['name']) > 200:
+            raise ValueError('PCF name must contain at most 200 characters')
+        parent_id = merged.get('parent_id')
+        level = PCF_TYPES.index(kind)
+        if level == 0:
+            if parent_id is not None:
+                raise ValueError('A Category cannot have a parent')
+        else:
+            parent = self.conn.execute(
+                'SELECT entry_type FROM pcf_entries WHERE id=?', (parent_id,)
+            ).fetchone()
+            if parent is None or parent['entry_type'] != PCF_TYPES[level - 1] or parent_id == ident:
+                raise ValueError(kind + ' must be linked to an existing ' + PCF_TYPES[level - 1])
+        if ident is not None:
+            expected = PCF_TYPES[level + 1] if level < 4 else ''
+            if self.conn.execute(
+                'SELECT 1 FROM pcf_entries WHERE parent_id=? AND entry_type!=?', (ident, expected)
+            ).fetchone():
+                raise ApiError(409, 'Entry type cannot change while it has incompatible children')
+        if self.conn.execute(
+            'SELECT 1 FROM pcf_entries WHERE parent_id IS ? AND number=? AND id!=?',
+            (parent_id, number, ident or -1),
+        ).fetchone():
+            raise ApiError(409, 'This number is already used under the selected parent')
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -77,6 +77,22 @@ class BackupTest(test_updater.UpdaterTest):
             self.assertEqual(db.execute('SELECT count(*) FROM streams_tags').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT name FROM tag_categories').fetchone()[0],'Services')
 
+    def test_pcf_hierarchy_and_stream_links_survive_restore(self):
+        with sqlite3.connect(self.db) as db:
+            db.execute("INSERT INTO pcf_entries(id,name,entry_type,number) VALUES (1,'IT Management','Category',1)")
+            db.execute("INSERT INTO pcf_entries(id,name,entry_type,parent_id,number) VALUES (2,'Fault to Restoration','Process Group',1,1)")
+            db.execute('INSERT INTO stream_pcf SELECT id,2 FROM streams')
+        source=self.manual()
+        with sqlite3.connect(self.db) as db:
+            db.execute('DELETE FROM stream_pcf')
+            db.execute('DELETE FROM pcf_entries WHERE id=2')
+            db.execute('DELETE FROM pcf_entries WHERE id=1')
+        self.supervisor.maintenance({'action':'restore','id':source.name})
+        self.assertEqual(updater.status()['state'],'succeeded',updater.status())
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute('SELECT parent_id FROM pcf_entries WHERE id=2').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT pcf_id FROM stream_pcf').fetchone()[0],2)
+
     def test_local_restore_creates_safety_backup_and_restores_accounts_data(self):
         source=self.manual()
         with sqlite3.connect(self.db) as db:
