@@ -91,6 +91,27 @@ header b {
   color: #263252;
   font-weight: 500;
 }
+.header-navigation {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+#sidebarToggle {
+  flex-shrink: 0;
+}
+body.sidebar-collapsed #sidebar {
+  display: none;
+}
+body.sidebar-collapsed main {
+  margin-left: 0;
+  width: 100%;
+}
+@media (max-width: 800px) {
+  #sidebarToggle span {
+    display: none;
+  }
+}
 .badge {
   font-size: 9px;
   letter-spacing: 1.2px;

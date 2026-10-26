@@ -9,7 +9,7 @@
     <script src="/app.js" defer></script>
   </head>
   <body>
-    <aside>
+    <aside id="sidebar">
       <a class="brand" href="/">
         ◈
         <span>VSM Toolbox</span>
@@ -33,10 +33,13 @@
     </aside>
     <main>
       <header>
-        <span>
+        <div class="header-navigation">
+          <button id="sidebarToggle" type="button" aria-label="Collapse menu" aria-controls="sidebar" aria-expanded="true" title="Collapse menu">☰ <span>Collapse menu</span></button>
+          <span>
           Workspace /
           <b id="breadcrumb">Value streams</b>
-        </span>
+          </span>
+        </div>
         <div id="identity"></div>
       </header>
       <section id="content"></section>
