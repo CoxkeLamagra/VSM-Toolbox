@@ -2003,7 +2003,6 @@ class StreamDiagram {
 $('#sidebarToggle').onclick = () => {
   const collapsed = document.body.classList.toggle('sidebar-collapsed');
   const label = collapsed ? 'Expand menu' : 'Collapse menu';
-  $('#sidebar').hidden = collapsed;
   $('#sidebarToggle').setAttribute('aria-expanded', String(!collapsed));
   $('#sidebarToggle').setAttribute('aria-label', label);
   $('#sidebarToggle').title = label;
