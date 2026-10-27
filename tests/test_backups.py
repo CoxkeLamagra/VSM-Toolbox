@@ -93,6 +93,29 @@ class BackupTest(test_updater.UpdaterTest):
             self.assertEqual(db.execute('SELECT parent_id FROM pcf_entries WHERE id=2').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT pcf_id FROM stream_pcf').fetchone()[0],2)
 
+    def test_multiple_environments_and_memberships_survive_restore(self):
+        with sqlite3.connect(self.db) as db:
+            db.execute("INSERT INTO environment_members VALUES (1,1,'Admin')")
+            db.execute("INSERT INTO environments(id,name,created_by,created_at) VALUES (2,'Second environment',1,1)")
+            db.execute("INSERT INTO environment_members VALUES (2,1,'Admin')")
+            db.execute("INSERT INTO streams(id,name,environment_id) VALUES (2,'Second service',2)")
+            db.execute("INSERT INTO pcf_entries(id,name,entry_type,number,environment_id) VALUES (1,'First category','Category',1,1)")
+            db.execute("INSERT INTO pcf_entries(id,name,entry_type,number,environment_id) VALUES (2,'Second category','Category',1,2)")
+            db.execute('INSERT INTO stream_pcf VALUES (2,2)')
+            db.execute("INSERT INTO tags(id,name,environment_id) VALUES (1,'Critical',1)")
+            db.execute("INSERT INTO tags(id,name,environment_id) VALUES (2,'Critical',2)")
+        source=self.manual()
+        updater.clear_business_data(self.db)
+        with sqlite3.connect(self.db) as db:db.execute("UPDATE environments SET name='Changed' WHERE id=2")
+        self.supervisor.maintenance({'action':'restore','id':source.name})
+        self.assertEqual(updater.status()['state'],'succeeded',updater.status())
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute('SELECT name FROM environments WHERE id=2').fetchone()[0],'Second environment')
+            self.assertEqual(db.execute('SELECT count(*) FROM environment_members').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT name FROM streams WHERE environment_id=2').fetchone()[0],'Second service')
+            self.assertEqual(db.execute('SELECT pcf_id FROM stream_pcf WHERE stream_id=2').fetchone()[0],2)
+            self.assertEqual(list(db.execute('PRAGMA foreign_key_check')),[])
+
     def test_local_restore_creates_safety_backup_and_restores_accounts_data(self):
         source=self.manual()
         with sqlite3.connect(self.db) as db:

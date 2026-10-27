@@ -82,9 +82,10 @@ def initialize():
           parent_id INTEGER REFERENCES pcf_entries(id) ON DELETE RESTRICT,
           number INTEGER NOT NULL CHECK(number>0 AND number<=999999),
           reference TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+          environment_id INTEGER NOT NULL DEFAULT 1 REFERENCES environments(id) ON DELETE CASCADE,
           CHECK((entry_type='Category' AND parent_id IS NULL) OR (entry_type!='Category' AND parent_id IS NOT NULL)),
           UNIQUE(parent_id,number));
-        CREATE UNIQUE INDEX IF NOT EXISTS pcf_category_number ON pcf_entries(number) WHERE parent_id IS NULL;
+
         CREATE TABLE IF NOT EXISTS stream_pcf (
           stream_id INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
           pcf_id INTEGER NOT NULL REFERENCES pcf_entries(id) ON DELETE CASCADE,
@@ -104,6 +105,105 @@ def initialize():
         # Existing workspaces gain an optional customer request without losing data.
         if 'voc' not in {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}:
             conn.execute("ALTER TABLE streams ADD COLUMN voc TEXT NOT NULL DEFAULT ''")
+        migrate_environments(conn)
+        initialize_environment_guards(conn)
+
+
+def migrate_environments(conn):
+    """Move legacy content into environment 1, preserving IDs and relationships."""
+    if conn.execute("SELECT 1 FROM settings WHERE key='environment_schema'").fetchone():
+        return
+    conn.commit()
+    conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS environments (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT \'\', created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at REAL NOT NULL)'
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS environment_members (environment_id INTEGER NOT NULL REFERENCES environments(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT CHECK(role IN ('Admin','Editor','Viewer')), PRIMARY KEY(environment_id,user_id))"
+        )
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS session_environments (token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE, environment_id INTEGER REFERENCES environments(id) ON DELETE SET NULL)'
+        )
+        conn.execute(
+            "INSERT INTO environments(id,name,description,created_by,created_at) VALUES (1,'Default environment','Existing workspace content',(SELECT id FROM users WHERE role='Admin' ORDER BY id LIMIT 1),?)",
+            (time.time(),),
+        )
+        conn.execute(
+            'INSERT INTO environment_members(environment_id,user_id) SELECT 1,id FROM users'
+        )
+        conn.execute('INSERT INTO session_environments SELECT token_hash,1 FROM sessions')
+        for table in ('streams', 'steps', 'processes', 'pcf_entries'):
+            if 'environment_id' not in {
+                row['name'] for row in conn.execute(f'PRAGMA table_info({table})')
+            }:
+                conn.execute(
+                    f'ALTER TABLE {table} ADD COLUMN environment_id INTEGER NOT NULL DEFAULT 1 REFERENCES environments(id) ON DELETE CASCADE'
+                )
+            conn.execute(f'CREATE INDEX {table}_environment ON {table}(environment_id)')
+        # Rebuild the two catalogs to replace legacy global-name uniqueness.
+        conn.execute(
+            "CREATE TABLE tag_categories_new (id INTEGER PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,environment_id INTEGER NOT NULL DEFAULT 1 REFERENCES environments(id) ON DELETE CASCADE,UNIQUE(environment_id,name))"
+        )
+        conn.execute('INSERT INTO tag_categories_new(id,name) SELECT id,name FROM tag_categories')
+        conn.execute('DROP TABLE tag_categories')
+        conn.execute('ALTER TABLE tag_categories_new RENAME TO tag_categories')
+        conn.execute(
+            "CREATE TABLE tags_new (id INTEGER PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,color TEXT NOT NULL DEFAULT '#e6404d',category_id INTEGER REFERENCES tag_categories(id) ON DELETE SET NULL,environment_id INTEGER NOT NULL DEFAULT 1 REFERENCES environments(id) ON DELETE CASCADE,UNIQUE(environment_id,name))"
+        )
+        conn.execute(
+            'INSERT INTO tags_new(id,name,color,category_id) SELECT id,name,color,category_id FROM tags'
+        )
+        conn.execute('DROP TABLE tags')
+        conn.execute('ALTER TABLE tags_new RENAME TO tags')
+        conn.execute('DROP INDEX IF EXISTS pcf_category_number')
+        conn.execute(
+            'CREATE UNIQUE INDEX pcf_category_number ON pcf_entries(environment_id,number) WHERE parent_id IS NULL'
+        )
+        conn.execute("INSERT INTO settings VALUES ('environment_schema','1')")
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('Environment migration found invalid relationships')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+
+
+def initialize_environment_guards(conn):
+    conn.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS pcf_category_number ON pcf_entries(environment_id,number) WHERE parent_id IS NULL'
+    )
+    # Old installed supervisors may delete sessions with foreign keys disabled.
+    conn.execute(
+        'CREATE TRIGGER IF NOT EXISTS session_environment_cleanup BEFORE DELETE ON sessions BEGIN DELETE FROM session_environments WHERE token_hash=OLD.token_hash; END'
+    )
+    # Defense in depth for relationships written outside the repository helpers.
+    relationships = [
+        ('steps', 'stream_id', 'streams'),
+        ('pcf_entries', 'parent_id', 'pcf_entries'),
+        ('tags', 'category_id', 'tag_categories'),
+    ]
+    for table, key, parent in relationships:
+        for event in ('INSERT', 'UPDATE'):
+            conn.execute(
+                f"CREATE TRIGGER IF NOT EXISTS env_{table}_{event} BEFORE {event} ON {table} WHEN NEW.{key} IS NOT NULL AND NEW.environment_id IS NOT (SELECT environment_id FROM {parent} WHERE id=NEW.{key}) BEGIN SELECT RAISE(ABORT,'Cross-environment relationship'); END"
+            )
+    joins = [
+        ('step_processes', 'step_id', 'steps', 'process_id', 'processes'),
+        ('stream_pcf', 'stream_id', 'streams', 'pcf_id', 'pcf_entries'),
+    ]
+    joins += [
+        (f'{table}_tags', 'entity_id', table, 'tag_id', 'tags')
+        for table in ('streams', 'steps', 'processes')
+    ]
+    for table, left, left_table, right, right_table in joins:
+        for event in ('INSERT', 'UPDATE'):
+            conn.execute(
+                f"CREATE TRIGGER IF NOT EXISTS env_{table}_{event} BEFORE {event} ON {table} WHEN (SELECT environment_id FROM {left_table} WHERE id=NEW.{left}) IS NOT (SELECT environment_id FROM {right_table} WHERE id=NEW.{right}) BEGIN SELECT RAISE(ABORT,'Cross-environment relationship'); END"
+            )
 
 
 BRANDING_DEFAULTS = {
@@ -287,8 +387,9 @@ class ContentRepository:
     cookies, and permission enforcement belong to Handler instead.
     """
 
-    def __init__(self, conn):
+    def __init__(self, conn, environment_id=1):
         self.conn = conn
+        self.environment_id = environment_id
 
     def serialize(self, table, rows, ident=None):
         records = [dict(row) for row in rows]
@@ -297,7 +398,10 @@ class ContentRepository:
         if table == 'pcf_entries':
             entries = {
                 row['id']: dict(row)
-                for row in self.conn.execute('SELECT id,parent_id,number FROM pcf_entries')
+                for row in self.conn.execute(
+                    'SELECT id,parent_id,number FROM pcf_entries WHERE environment_id=?',
+                    (self.environment_id,),
+                )
             }
             for record in records:
                 path, current = [], record['id']
@@ -314,11 +418,11 @@ class ContentRepository:
             relationships.append(('stream_pcf', 'stream_id', 'pcf_id', 'pcf_ids'))
         for join_table, entity_key, item_key, output in relationships:
             assignments = {}
-            query = f'SELECT {entity_key}, {item_key} FROM {join_table}'
-            parameters = ()
+            query = f'SELECT j.{entity_key}, j.{item_key} FROM {join_table} j JOIN {table} e ON e.id=j.{entity_key} WHERE e.environment_id=?'
+            parameters = (self.environment_id,)
             if ident is not None:
-                query += f' WHERE {entity_key}=?'
-                parameters = (ident,)
+                query += f' AND j.{entity_key}=?'
+                parameters = (self.environment_id, ident)
             for entity_id, item_id in self.conn.execute(
                 query + f' ORDER BY {item_key}', parameters
             ):
@@ -329,10 +433,18 @@ class ContentRepository:
 
     def list(self, table, ordered=False):
         order = RESOURCES[table].order_by if ordered else 'id'
-        return self.serialize(table, self.conn.execute(f'SELECT * FROM {table} ORDER BY {order}'))
+        return self.serialize(
+            table,
+            self.conn.execute(
+                f'SELECT * FROM {table} WHERE environment_id=? ORDER BY {order}',
+                (self.environment_id,),
+            ),
+        )
 
     def get(self, table, ident):
-        row = self.conn.execute(f'SELECT * FROM {table} WHERE id=?', (ident,)).fetchone()
+        row = self.conn.execute(
+            f'SELECT * FROM {table} WHERE id=? AND environment_id=?', (ident, self.environment_id)
+        ).fetchone()
         if row is None:
             raise ApiError(404, 'Not found')
         return self.serialize(table, [row], ident)[0]
@@ -342,7 +454,8 @@ class ContentRepository:
         data['step_processes'] = [
             dict(row)
             for row in self.conn.execute(
-                'SELECT * FROM step_processes ORDER BY step_id, process_id'
+                'SELECT sp.* FROM step_processes sp JOIN steps s ON s.id=sp.step_id WHERE s.environment_id=? ORDER BY step_id, process_id',
+                (self.environment_id,),
             )
         ]
         return data
@@ -353,12 +466,22 @@ class ContentRepository:
         pcf_ids = None
         if table == 'streams' and 'pcf_ids' in values:
             pcf_ids = integer_ids(values.pop('pcf_ids'), 'pcf_ids')
-            existing = {row[0] for row in self.conn.execute('SELECT id FROM pcf_entries')}
+            existing = {
+                row[0]
+                for row in self.conn.execute(
+                    'SELECT id FROM pcf_entries WHERE environment_id=?', (self.environment_id,)
+                )
+            }
             if not set(pcf_ids) <= existing:
                 raise ValueError('Unknown PCF entry')
         if spec.tagged and 'tag_ids' in values:
             tag_ids = integer_ids(values.pop('tag_ids'), 'tag_ids')
-            existing = {row[0] for row in self.conn.execute('SELECT id FROM tags')}
+            existing = {
+                row[0]
+                for row in self.conn.execute(
+                    'SELECT id FROM tags WHERE environment_id=?', (self.environment_id,)
+                )
+            }
             if not set(tag_ids) <= existing:
                 raise ValueError('Unknown tag')
         if (
@@ -400,12 +523,37 @@ class ContentRepository:
             raise ValueError('Name cannot be empty')
         if not values and tag_ids is None and pcf_ids is None:
             raise ValueError('No fields supplied')
+        if (
+            table == 'steps'
+            and 'stream_id' in values
+            and not self.conn.execute(
+                'SELECT 1 FROM streams WHERE id=? AND environment_id=?',
+                (values['stream_id'], self.environment_id),
+            ).fetchone()
+        ):
+            raise ValueError('Unknown stream')
+        if (
+            table == 'tags'
+            and values.get('category_id') is not None
+            and not self.conn.execute(
+                'SELECT 1 FROM tag_categories WHERE id=? AND environment_id=?',
+                (values['category_id'], self.environment_id),
+            ).fetchone()
+        ):
+            raise ValueError('Unknown tag category')
         return tag_ids, pcf_ids
 
     def replace_process_links(self, step_id, data):
-        if not self.conn.execute('SELECT id FROM steps WHERE id=?', (step_id,)).fetchone():
-            raise ApiError(404, 'Step not found')
+        self.get('steps', step_id)
         ids = integer_ids(data.get('process_ids'), 'process_ids')
+        available = {
+            row[0]
+            for row in self.conn.execute(
+                'SELECT id FROM processes WHERE environment_id=?', (self.environment_id,)
+            )
+        }
+        if not set(ids) <= available:
+            raise ValueError('Unknown process')
         self.conn.execute('DELETE FROM step_processes WHERE step_id=?', (step_id,))
         self.conn.executemany(
             'INSERT INTO step_processes VALUES (?,?)', [(step_id, ident) for ident in set(ids)]
@@ -446,6 +594,7 @@ class ContentRepository:
         if table == 'pcf_entries':
             self.validate_pcf(ident, values)
         if method == 'POST':
+            values['environment_id'] = self.environment_id
             columns = ','.join(values)
             placeholders = ','.join('?' for _ in values)
             cursor = self.conn.execute(
@@ -487,7 +636,8 @@ class ContentRepository:
                 raise ValueError('A Category cannot have a parent')
         else:
             parent = self.conn.execute(
-                'SELECT entry_type FROM pcf_entries WHERE id=?', (parent_id,)
+                'SELECT entry_type FROM pcf_entries WHERE id=? AND environment_id=?',
+                (parent_id, self.environment_id),
             ).fetchone()
             if parent is None or parent['entry_type'] != PCF_TYPES[level - 1] or parent_id == ident:
                 raise ValueError(kind + ' must be linked to an existing ' + PCF_TYPES[level - 1])
@@ -498,8 +648,8 @@ class ContentRepository:
             ).fetchone():
                 raise ApiError(409, 'Entry type cannot change while it has incompatible children')
         if self.conn.execute(
-            'SELECT 1 FROM pcf_entries WHERE parent_id IS ? AND number=? AND id!=?',
-            (parent_id, number, ident or -1),
+            'SELECT 1 FROM pcf_entries WHERE parent_id IS ? AND number=? AND id!=? AND environment_id=?',
+            (parent_id, number, ident or -1, self.environment_id),
         ).fetchone():
             raise ApiError(409, 'This number is already used under the selected parent')
 
@@ -584,13 +734,17 @@ def parse_pcf_csv(text):
 class PCFImporter:
     """Preview and apply a whole CSV within the caller's database transaction."""
 
-    def __init__(self, conn, text):
+    def __init__(self, conn, text, environment_id=1):
         self.conn = conn
+        self.environment_id = environment_id
         self.rows = parse_pcf_csv(text)
         self.existing = {
-            row['id']: dict(row) for row in conn.execute('SELECT * FROM pcf_entries ORDER BY id')
+            row['id']: dict(row)
+            for row in conn.execute(
+                'SELECT * FROM pcf_entries WHERE environment_id=? ORDER BY id', (environment_id,)
+            )
         }
-        serialized = ContentRepository(conn).list('pcf_entries')
+        serialized = ContentRepository(conn, environment_id).list('pcf_entries')
         self.indexes = {row['index']: row['id'] for row in serialized}
         self.labels = {row['id']: row['index'] for row in serialized}
         self.references = {}
@@ -600,7 +754,10 @@ class PCFImporter:
                     entry['id']
                 )
         self.fingerprint = hashlib.sha256(
-            json.dumps(list(self.existing.values()), sort_keys=True).encode()
+            json.dumps(
+                {'environment_id': environment_id, 'entries': list(self.existing.values())},
+                sort_keys=True,
+            ).encode()
         ).hexdigest()
         self.duplicates = []
         incoming_indexes = {row['index'] for row in self.rows}
@@ -651,7 +808,7 @@ class PCFImporter:
             raise ValueError('Choose Yes or No for every duplicate APQC reference ID')
         model = {ident: dict(entry) for ident, entry in self.existing.items()}
         incoming_ids, changed, skipped = {}, [], 0
-        next_id = max(model, default=0) + 1
+        next_id = self.conn.execute('SELECT COALESCE(max(id),0)+1 FROM pcf_entries').fetchone()[0]
         for row in self.rows:
             matches = self.references.get(row['reference'].casefold(), [])
             if matches:
@@ -720,8 +877,10 @@ class PCFImporter:
                 )
             else:
                 self.conn.execute(
-                    'INSERT INTO pcf_entries(id,' + ','.join(columns) + ') VALUES (?,?,?,?,?,?,?)',
-                    [ident, *values],
+                    'INSERT INTO pcf_entries(id,environment_id,'
+                    + ','.join(columns)
+                    + ') VALUES (?,?,?,?,?,?,?,?)',
+                    [ident, self.environment_id, *values],
                 )
         return {
             'created': sum(ident not in self.existing for ident in changed),
@@ -778,6 +937,213 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, 'Missing or invalid CSRF token')
         return user
 
+    def selected_environment(self, conn, user=None):
+        user = user or self.session(conn)
+        if user is None:
+            return None
+        token = hashlib.sha256(self.session_token().encode()).hexdigest()
+        row = conn.execute(
+            'SELECT e.id,e.name,e.description,COALESCE(m.role,u.role) AS role FROM environment_members m JOIN environments e ON e.id=m.environment_id JOIN users u ON u.id=m.user_id LEFT JOIN session_environments se ON se.token_hash=? WHERE m.user_id=? ORDER BY CASE WHEN e.id=se.environment_id THEN 0 ELSE 1 END,e.id LIMIT 1',
+            (token, user['id']),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def require_environment(self, conn, roles=ROLES, csrf=False):
+        user = self.require_user(conn, csrf=csrf)
+        environment = self.selected_environment(conn, user)
+        if environment is None:
+            raise ApiError(409, 'Create or join an environment first')
+        requested = self.headers.get('X-Environment-ID')
+        if requested is not None and requested != str(environment['id']):
+            raise ApiError(409, 'The active environment changed. Refresh before continuing.')
+        if environment['role'] not in roles:
+            raise ApiError(403, 'Your environment role does not allow this action')
+        return environment
+
+    def environment_member(self, conn, ident, roles=ROLES):
+        user = self.require_user(conn)
+        row = conn.execute(
+            'SELECT e.*,COALESCE(m.role,u.role) AS role FROM environments e JOIN environment_members m ON m.environment_id=e.id JOIN users u ON u.id=m.user_id WHERE e.id=? AND m.user_id=?',
+            (ident, user['id']),
+        ).fetchone()
+        if row is None:
+            raise ApiError(404, 'Environment not found')
+        if row['role'] not in roles:
+            raise ApiError(403, 'Only environment Admins can perform this action')
+        return dict(row)
+
+    def environment_overview(self, conn):
+        user = self.require_user(conn)
+        rows = conn.execute(
+            'SELECT e.*,COALESCE(m.role,u.role) AS role FROM environments e JOIN environment_members m ON m.environment_id=e.id JOIN users u ON u.id=m.user_id WHERE m.user_id=? ORDER BY e.name COLLATE NOCASE,e.id',
+            (user['id'],),
+        )
+        results = {
+            row['id']: {
+                **dict(row),
+                'counts': {
+                    key: 0
+                    for key in ('streams', 'steps', 'processes', 'pcf_entries', 'tags', 'members')
+                },
+            }
+            for row in rows
+        }
+        for table in (
+            'streams',
+            'steps',
+            'processes',
+            'pcf_entries',
+            'tags',
+            'environment_members',
+        ):
+            key = 'members' if table == 'environment_members' else table
+            counts = conn.execute(
+                f'SELECT environment_id,count(*) AS total FROM {table} WHERE environment_id IN (SELECT environment_id FROM environment_members WHERE user_id=?) GROUP BY environment_id',
+                (user['id'],),
+            )
+            for count in counts:
+                results[count['environment_id']]['counts'][key] = count['total']
+        return list(results.values())
+
+    def environment_members(self, conn, ident):
+        self.environment_member(conn, ident, ('Admin',))
+        return [
+            dict(row)
+            for row in conn.execute(
+                'SELECT u.id AS user_id,u.username,COALESCE(m.role,u.role) AS role,m.role IS NULL AS inherited FROM environment_members m JOIN users u ON u.id=m.user_id WHERE m.environment_id=? ORDER BY u.username',
+                (ident,),
+            )
+        ]
+
+    def environment_mutation(self, conn, parts, method, data):
+        user = self.require_user(conn, csrf=True)
+        if len(parts) == 2 and method == 'POST':
+            if (
+                set(data) - {'name', 'description'}
+                or not isinstance(data.get('name'), str)
+                or not 1 <= len(data['name'].strip()) <= 200
+                or not isinstance(data.get('description', ''), str)
+                or len(data.get('description', '')) > 20000
+            ):
+                raise ValueError(
+                    'Supply an environment name (1–200 characters) and optional description'
+                )
+            cursor = conn.execute(
+                'INSERT INTO environments(name,description,created_by,created_at) VALUES (?,?,?,?)',
+                (data['name'].strip(), data.get('description', ''), user['id'], time.time()),
+            )
+            ident = cursor.lastrowid
+            conn.execute(
+                "INSERT INTO environment_members VALUES (?,?,'Admin')", (ident, user['id'])
+            )
+            token = hashlib.sha256(self.session_token().encode()).hexdigest()
+            conn.execute(
+                'INSERT INTO session_environments VALUES (?,?) ON CONFLICT(token_hash) DO UPDATE SET environment_id=excluded.environment_id',
+                (token, ident),
+            )
+            return self.environment_member(conn, ident)
+        if len(parts) not in (3, 4, 5) or not parts[2].isdigit():
+            raise ApiError(404, 'Not found')
+        ident = int(parts[2])
+        if len(parts) == 4 and parts[3] == 'switch' and method == 'POST':
+            if data:
+                raise ValueError('Switch accepts an empty object')
+            environment = self.environment_member(conn, ident)
+            token = hashlib.sha256(self.session_token().encode()).hexdigest()
+            conn.execute(
+                'INSERT INTO session_environments VALUES (?,?) ON CONFLICT(token_hash) DO UPDATE SET environment_id=excluded.environment_id',
+                (token, ident),
+            )
+            return environment
+        environment = self.environment_member(conn, ident, ('Admin',))
+        if len(parts) == 4 and parts[3] == 'members' and method == 'POST':
+            if (
+                set(data) != {'username', 'role'}
+                or not isinstance(data['username'], str)
+                or data['role'] not in ROLES
+            ):
+                raise ValueError(
+                    'Supply an existing local username and Admin, Editor, or Viewer role'
+                )
+            member = conn.execute(
+                'SELECT id FROM users WHERE username=?', (data['username'],)
+            ).fetchone()
+            if member is None:
+                raise ValueError('Local account not found')
+            if conn.execute(
+                'SELECT 1 FROM environment_members WHERE environment_id=? AND user_id=?',
+                (ident, member['id']),
+            ).fetchone():
+                raise ApiError(409, 'This account is already a member; edit its role instead')
+            conn.execute(
+                'INSERT INTO environment_members VALUES (?,?,?)',
+                (ident, member['id'], data['role']),
+            )
+            return self.environment_members(conn, ident)
+        if (
+            len(parts) == 5
+            and parts[3] == 'members'
+            and parts[4].isdigit()
+            and method in ('PUT', 'DELETE')
+        ):
+            member_id = int(parts[4])
+            current = conn.execute(
+                'SELECT COALESCE(m.role,u.role) AS role FROM environment_members m JOIN users u ON u.id=m.user_id WHERE m.environment_id=? AND m.user_id=?',
+                (ident, member_id),
+            ).fetchone()
+            if current is None:
+                raise ApiError(404, 'Member not found')
+            if method == 'PUT' and (set(data) != {'role'} or data['role'] not in ROLES):
+                raise ValueError('Supply an Admin, Editor, or Viewer role')
+            removing_admin = current['role'] == 'Admin' and (
+                method == 'DELETE' or data.get('role') != 'Admin'
+            )
+            admins = conn.execute(
+                "SELECT count(*) FROM environment_members m JOIN users u ON u.id=m.user_id WHERE m.environment_id=? AND COALESCE(m.role,u.role)='Admin'",
+                (ident,),
+            ).fetchone()[0]
+            if removing_admin and admins <= 1:
+                raise ApiError(409, 'The last environment Admin cannot be removed or demoted')
+            if method == 'DELETE':
+                conn.execute(
+                    'DELETE FROM environment_members WHERE environment_id=? AND user_id=?',
+                    (ident, member_id),
+                )
+            else:
+                conn.execute(
+                    'UPDATE environment_members SET role=? WHERE environment_id=? AND user_id=?',
+                    (data['role'], ident, member_id),
+                )
+            return {'updated': member_id}
+        if len(parts) == 3 and method == 'DELETE':
+            if data != {'confirmation': environment['name']}:
+                raise ValueError('Confirm the environment name before deleting it')
+            conn.execute('DELETE FROM streams WHERE environment_id=?', (ident,))
+            conn.execute('DELETE FROM processes WHERE environment_id=?', (ident,))
+            for kind in reversed(PCF_TYPES):
+                conn.execute(
+                    'DELETE FROM pcf_entries WHERE environment_id=? AND entry_type=?', (ident, kind)
+                )
+            conn.execute('DELETE FROM environments WHERE id=?', (ident,))
+            return {'deleted': ident}
+        if len(parts) == 3 and method == 'PUT':
+            if not data or set(data) - {'name', 'description'}:
+                raise ValueError('Supply name and/or description')
+            if 'name' in data and (
+                not isinstance(data['name'], str) or not 1 <= len(data['name'].strip()) <= 200
+            ):
+                raise ValueError('Name must contain 1–200 characters')
+            if 'description' in data and (
+                not isinstance(data['description'], str) or len(data['description']) > 20000
+            ):
+                raise ValueError('Description must contain at most 20000 characters')
+            conn.execute(
+                'UPDATE environments SET ' + ','.join(key + '=?' for key in data) + ' WHERE id=?',
+                [*data.values(), ident],
+            )
+            return {'updated': ident}
+        raise ApiError(405, 'Unsupported environment operation')
+
     def session_cookie(self, token, expires=False):
         secure = '; Secure' if os.environ.get('VSM_COOKIE_SECURE') == '1' else ''
         return f'vsm_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={0 if expires else SESSION_SECONDS}{secure}'
@@ -798,6 +1164,17 @@ class Handler(BaseHTTPRequestHandler):
                 time.time() + SESSION_SECONDS,
             ),
         )
+        first = conn.execute(
+            'SELECT environment_id FROM environment_members WHERE user_id=? ORDER BY environment_id LIMIT 1',
+            (user['id'],),
+        ).fetchone()
+        conn.execute(
+            'INSERT INTO session_environments VALUES (?,?)',
+            (
+                hashlib.sha256(token.encode()).hexdigest(),
+                first['environment_id'] if first else None,
+            ),
+        )
         return {
             'user': public_user(user),
             'csrf_token': csrf,
@@ -816,6 +1193,14 @@ class Handler(BaseHTTPRequestHandler):
             cursor = conn.execute(
                 'INSERT INTO users (username,password_hash,role) VALUES (?,?,?)',
                 (data['username'], password_hash(data['password']), 'Admin'),
+            )
+            conn.execute(
+                'INSERT INTO environment_members(environment_id,user_id) SELECT id,? FROM environments WHERE id=1',
+                (cursor.lastrowid,),
+            )
+            conn.execute(
+                'UPDATE environments SET created_by=? WHERE id=1 AND created_by IS NULL',
+                (cursor.lastrowid,),
             )
             user = conn.execute('SELECT * FROM users WHERE id=?', (cursor.lastrowid,)).fetchone()
             result, cookie = self.create_session(conn, user)
@@ -900,6 +1285,22 @@ class Handler(BaseHTTPRequestHandler):
         ):
             if conn.execute("SELECT count(*) FROM users WHERE role='Admin'").fetchone()[0] <= 1:
                 raise ApiError(409, 'The last Admin cannot be removed or demoted')
+        if current and (method == 'DELETE' or data.get('role', current['role']) != 'Admin'):
+            memberships = conn.execute(
+                "SELECT m.environment_id,m.role FROM environment_members m JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND COALESCE(m.role,u.role)='Admin'",
+                (ident,),
+            )
+            for member in memberships:
+                if method != 'DELETE' and member['role'] is not None:
+                    continue
+                others = conn.execute(
+                    "SELECT count(*) FROM environment_members m JOIN users u ON u.id=m.user_id WHERE m.environment_id=? AND m.user_id!=? AND COALESCE(m.role,u.role)='Admin'",
+                    (member['environment_id'], ident),
+                ).fetchone()[0]
+                if not others:
+                    raise ApiError(
+                        409, 'Transfer environment administration before removing its last Admin'
+                    )
         if method == 'DELETE':
             conn.execute('DELETE FROM users WHERE id=?', (ident,))
             return {'deleted': ident}
@@ -913,6 +1314,12 @@ class Handler(BaseHTTPRequestHandler):
                 list(values.values()),
             )
             ident = cursor.lastrowid
+            environment = self.selected_environment(conn)
+            if environment and environment['role'] == 'Admin':
+                conn.execute(
+                    'INSERT INTO environment_members(environment_id,user_id) VALUES (?,?)',
+                    (environment['id'], ident),
+                )
         else:
             conn.execute(
                 f'UPDATE users SET {",".join(k+"=?" for k in values)} WHERE id=?',
@@ -944,13 +1351,18 @@ class Handler(BaseHTTPRequestHandler):
                         result = {'branding': theme, 'defaults': BRANDING_DEFAULTS}
                     else:
                         result = branding_stylesheet(
-                            theme, conn.execute('SELECT id,color FROM tags')
+                            theme,
+                            conn.execute(
+                                'SELECT id,color FROM tags WHERE environment_id=?',
+                                ((self.selected_environment(conn) or {}).get('id', -1),),
+                            ),
                         )
                 elif path == '/api/session':
                     user = self.session(conn)
                     result = {
                         'user': public_user(user) if user else None,
                         'csrf_token': user['csrf_token'] if user else None,
+                        'environment': self.selected_environment(conn, user) if user else None,
                         'setup_required': not bool(
                             conn.execute('SELECT 1 FROM users LIMIT 1').fetchone()
                         ),
@@ -1002,7 +1414,14 @@ class Handler(BaseHTTPRequestHandler):
             if row is None:
                 raise ApiError(404, 'Account not found')
             return public_user(row)
-        repository = ContentRepository(conn)
+        if path == '/api/environments':
+            return self.environment_overview(conn)
+        if re.fullmatch(r'/api/environments/[0-9]+/members', path):
+            return self.environment_members(conn, int(path.split('/')[3]))
+        if re.fullmatch(r'/api/environments/[0-9]+', path):
+            return self.environment_member(conn, int(path.split('/')[3]))
+        environment = self.require_environment(conn)
+        repository = ContentRepository(conn, environment['id'])
         if path == '/api/data':
             return repository.snapshot()
         parts = path.strip('/').split('/')
@@ -1203,7 +1622,7 @@ class Handler(BaseHTTPRequestHandler):
                     path in ('/api/pcf_import/preview', '/api/pcf_import/apply')
                     and method == 'POST'
                 ):
-                    self.require_user(conn, ('Admin', 'Editor'), csrf=True)
+                    environment = self.require_environment(conn, ('Admin', 'Editor'), csrf=True)
                     required = (
                         {'csv'}
                         if path.endswith('/preview')
@@ -1213,7 +1632,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(
                             'Supply CSV text and, for apply, the preview fingerprint and overwrite decisions'
                         )
-                    importer = PCFImporter(conn, data['csv'])
+                    importer = PCFImporter(conn, data['csv'], environment['id'])
                     result = (
                         importer.preview()
                         if path.endswith('/preview')
@@ -1228,6 +1647,9 @@ class Handler(BaseHTTPRequestHandler):
                         (json.dumps(theme),),
                     )
                     status, result, cookie = 200, theme, None
+                elif len(parts) >= 2 and parts[:2] == ['api', 'environments']:
+                    result = self.environment_mutation(conn, parts, method, data)
+                    status, cookie = (201 if method == 'POST' and len(parts) == 2 else 200), None
                 elif path.startswith('/api/auth/'):
                     status, result, cookie = self.auth_mutation(conn, path, method, data)
                 elif len(parts) >= 2 and parts[:2] == ['api', 'users']:
@@ -1235,10 +1657,10 @@ class Handler(BaseHTTPRequestHandler):
                     status, cookie = (201 if method == 'POST' else 200), None
                 else:
                     spec = RESOURCES.get(parts[1]) if len(parts) > 1 else None
-                    self.require_user(
+                    environment = self.require_environment(
                         conn, spec.write_roles if spec else ('Admin', 'Editor'), csrf=True
                     )
-                    result = ContentRepository(conn).mutate(parts, method, data)
+                    result = ContentRepository(conn, environment['id']).mutate(parts, method, data)
                     status, cookie = (201 if method == 'POST' else 200), None
             self.respond(status, result, cookie)
         except ApiError as exc:

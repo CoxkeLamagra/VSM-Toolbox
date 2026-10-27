@@ -352,3 +352,46 @@ The application restarts briefly during clearing, and the UI polls until it retu
 API: Admin-only `GET /api/maintenance` reports operation status and capability. `POST /api/maintenance/clear-data` requires an Admin session, CSRF token, and exactly `{"confirmation":"DELETE ALL BUSINESS DATA"}`; it queues the backup-first supervisor operation and returns HTTP 202. Normal writes pause while the clear runs. The shared maintenance queue prevents simultaneous update, backup, restore, cleanup, or clear operations.
 
 Verification: the Python regression suite includes backup failure, transaction rollback, failed-startup recovery, retained configuration, restoration, role, CSRF, and exact-confirmation checks. `node tests/data-management.cjs` uses a disposable local instance to verify warning cancellation, backup creation, clearing, full restoration, and Viewer restrictions.
+
+### Environments
+
+Open **Environments** to manage separate local workspaces. Each environment contains its own value streams, delivery steps / process flows, process library, PCF hierarchy, tags, categories, and all related assignments. The header's **Environment** selector switches the current session; the dashboard's environment cards offer the same action. The dashboard shows counts for value streams, steps, processes, PCF entries, tags, and members.
+
+Any signed-in local account can create an environment and immediately becomes its **environment Admin**, even if its application role is Viewer. New environments are private to their creator until members are added. In the active environment's dashboard, an environment Admin can add existing local usernames as **Admin**, **Editor**, or **Viewer**, change those roles, and remove members. The final environment Admin cannot be removed or demoted. Application account deletion is also blocked when it would orphan an environment. Ask an application Admin to create a local account before inviting a new person.
+
+Environment permissions:
+
+| Role | Capabilities within that environment |
+| --- | --- |
+| Admin | Manage content, tags, categories, membership, environment details, and delete the environment |
+| Editor | Create/edit/delete streams, steps, processes, PCF entries, CSV imports, and assignments |
+| Viewer | Browse the dashboard and read assigned content |
+
+**Application roles remain separate.** Application Admins retain account management, branding, full backups/restores, updates, and the global clear-business-data action. Environment Admin status alone does not grant those application-wide privileges. Only environments where the user is a member appear in the overview or switcher. The header's `App` badge describes the account role; the dashboard and environment cards describe the environment role.
+
+Upgrading automatically assigns existing data to **Default environment**, preserving record IDs, links, tags, descriptions, and existing default-environment diagram layouts. Existing users receive membership there according to their account roles. These legacy memberships, and initial access given when an application Admin creates an account while administering the selected environment, follow the account role until an environment Admin explicitly sets a membership role. Explicit membership roles and creator Admin status are independent of account role changes. New environments can reuse tag/category names, APQC reference IDs, and PCF category numbers independently.
+
+Only an environment Admin sees **Delete environment**. Deletion requires the confirmation warning and removes that environment's streams, steps, processes, PCF entries, tags, categories, memberships, and assignments in one transaction. It preserves local accounts, branding, backups, and other environments. The final environment can be deleted; the empty dashboard then allows creating another. Deleting environments does not recreate Default environment on restart. Environment IDs are not reused.
+
+CSV preview/import, tag assignment, process linking, dashboards, and content APIs are scoped to the active environment. Cross-environment IDs and relationships are rejected. The frontend sends `X-Environment-ID` to prevent stale tabs from silently writing into a newly selected environment. Diagram layouts and pending CSV previews are separated/reset when switching.
+
+**Backup and maintenance scope:** full backups and restores cover the entire application database, including every environment and its members. Restoring is not limited to the selected environment. The application-wide **Data management** clear action still deletes business content across **all** environments, with its required backup and warnings; environment definitions, memberships, accounts, settings, and tag catalogs remain. Environment deletion is separate from that global action.
+
+Environment API (sign-in required; mutations also require CSRF):
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/environments` | Membership-filtered overview with counts |
+| `POST /api/environments` | Create with `name` and optional `description`; creator becomes Admin and switches into it |
+| `GET /api/environments/{id}` | Read a joined environment |
+| `POST /api/environments/{id}/switch` | Switch current session; send `{}` |
+| `PUT /api/environments/{id}` | Environment Admin edits name/description |
+| `DELETE /api/environments/{id}` | Environment Admin deletes it; requires `{"confirmation":"exact environment name"}` |
+| `GET /api/environments/{id}/members` | Environment Admin lists members |
+| `POST /api/environments/{id}/members` | Environment Admin adds an existing `username` and `role` |
+| `PUT /api/environments/{id}/members/{user_id}` | Environment Admin sets `role` |
+| `DELETE /api/environments/{id}/members/{user_id}` | Environment Admin removes membership |
+
+`GET /api/session` includes the active `environment` (`id`, `name`, `description`, effective `role`), or null. Business resource responses include `environment_id`; that field cannot be supplied to reassign resources. API clients should switch explicitly and send `X-Environment-ID` with business requests. A stale environment header returns HTTP 409. Accounts without memberships can list/create environments but must join/select one before calling business-data APIs.
+
+Tests: the Python suite covers populated legacy migration, scope boundaries, cross-environment relationship guards, roles, membership, CSV import scoping, deletion cleanup, and multi-environment backup/restore. `node tests/environments.cjs` exercises the dashboard, switching, creator privileges, invitations, isolated content, deletion, empty-state recovery, and mobile layout.

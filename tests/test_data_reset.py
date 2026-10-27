@@ -64,10 +64,17 @@ class DataResetTest(test_updater.UpdaterTest):
                 self.assertEqual(
                     db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0, table
                 )
-            for table in ('users', 'sessions', 'tags', 'tag_categories', 'settings'):
+            for table in ('users', 'sessions', 'tags', 'tag_categories'):
                 self.assertEqual(
                     db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 1, table
                 )
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(
+                json.loads(
+                    db.execute("SELECT value FROM settings WHERE key='branding'").fetchone()[0]
+                )['name'],
+                'Keep branding',
+            )
         self.assertTrue(self.supervisor.healthy(timeout=10))
         self.assertFalse((self.supervisor.base / 'pending.json').exists())
         self.supervisor.maintenance({'action': 'restore', 'id': backup.name})

@@ -664,6 +664,7 @@ class Supervisor:
                 raise RuntimeError('Updated application failed its health check')
             # Existing sessions must not survive code or schema changes.
             with sqlite3.connect(self.db) as conn:
+                conn.execute('PRAGMA foreign_keys=ON')
                 conn.execute('DELETE FROM sessions')
             atomic_json(self.base / 'active.json', self.active)
             (self.base / 'pending.json').unlink()
@@ -757,6 +758,7 @@ class Supervisor:
             (target / 'database.sqlite3').unlink()
             self.active = {'path': str(target), 'revision': metadata['revision']}
             with sqlite3.connect(self.db) as conn:
+                conn.execute('PRAGMA foreign_keys=ON')
                 conn.execute('DELETE FROM sessions')
             self.report('restarting', 'Starting the restored application…', backup=str(safety))
             self.start()

@@ -17,7 +17,8 @@ let brandSettings = {},
 let backupState = { backups: [], operation: {} };
 let streamMode = 'diagram',
   diagramController = null;
-const canEdit = () => ['Admin', 'Editor'].includes(session.user?.role);
+const canEdit = () => ['Admin', 'Editor'].includes(session.environment?.role);
+const environmentAdmin = () => session.environment?.role === 'Admin';
 const MAINTENANCE_BUSY = new Set([
   'queued',
   'checking',
@@ -81,6 +82,7 @@ async function api(path, method = 'GET', data) {
     headers: {
       'Content-Type': 'application/json',
       ...(session.csrf_token ? { 'X-CSRF-Token': session.csrf_token } : {}),
+      ...(session.environment ? { 'X-Environment-ID': String(session.environment.id) } : {}),
     },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
@@ -113,8 +115,18 @@ async function refresh() {
     render();
     return;
   }
-  if (VIEWS[view].adminOnly && session.user.role !== 'Admin') view = 'streams';
-  state = await api('data');
+  environmentList = await api('environments');
+  if (!session.environment) {
+    view = 'environments';
+    state = null;
+  } else {
+    if (
+      (VIEWS[view].adminOnly && session.user.role !== 'Admin') ||
+      (VIEWS[view].environmentAdminOnly && !environmentAdmin())
+    )
+      view = 'streams';
+    state = await api('data');
+  }
   applyBranding();
   await VIEWS[view].load?.();
   render();
@@ -127,9 +139,17 @@ const duration = (n) => `${Number(n.toFixed(1))} min`;
 // One registry owns page access, optional loading, rendering, and navigation.
 const VIEWS = {
   streams: { render: renderContent },
+  environments: {
+    render: renderEnvironments,
+    load: async () => {
+      environmentMembers = environmentAdmin()
+        ? await api('environments/' + session.environment.id + '/members')
+        : [];
+    },
+  },
   processes: { render: renderContent },
   pcf: { render: renderPCF },
-  tags: { adminOnly: true, render: renderTags },
+  tags: { environmentAdminOnly: true, render: renderTags },
   branding: { adminOnly: true, render: renderBranding },
   maintenance: {
     adminOnly: true,
@@ -161,9 +181,10 @@ const VIEWS = {
   },
 };
 function navigate(nextView) {
-  view = nextView;
+  view = !session.environment && !VIEWS[nextView].adminOnly ? 'environments' : nextView;
   selected = null;
-  if (VIEWS[view].adminOnly) refresh().catch(error);
+  if (VIEWS[view].adminOnly || VIEWS[view].environmentAdminOnly || view === 'environments')
+    refresh().catch(error);
   else render();
 }
 function syncThemeStylesheet() {
@@ -219,6 +240,78 @@ function stats(items) {
     </div>
   `;
 }
+let environmentList = [],
+  environmentMembers = [];
+function resetEnvironmentView() {
+  selected = null;
+  pcfFocus = null;
+  pcfImportState = null;
+  pcfImportOpen = false;
+  streamMode = 'diagram';
+}
+async function switchEnvironment(id) {
+  await api('environments/' + id + '/switch', 'POST', {});
+  resetEnvironmentView();
+  await refresh();
+}
+function editEnvironment(id) {
+  const entry = environmentList.find((environment) => environment.id === id) || {};
+  modal(
+    id ? 'Edit environment' : 'Create environment',
+    field('name', 'Environment name', entry.name) +
+      field('description', 'Description', entry.description, 'textarea'),
+    async (data) => {
+      await api('environments' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
+      if (!id) resetEnvironmentView();
+      view = 'environments';
+    },
+  );
+}
+function renderEnvironments() {
+  const active = environmentList.find((environment) => environment.id === session.environment?.id);
+  $('#breadcrumb').textContent = 'Environments';
+  const countLabels = {
+    streams: 'Value streams',
+    steps: 'Delivery steps',
+    processes: 'Processes',
+    pcf_entries: 'PCF entries',
+    tags: 'Tags',
+    members: 'Members',
+  };
+  $('#content').innerHTML =
+    `<div class="eyebrow">ENVIRONMENT MANAGEMENT</div><div class="title-row"><div><h1>Environments</h1><p>Separate your value streams, processes, PCF classifications, and tags into independent workspaces.</p></div><button class="primary" data-action="new-environment">+ Create environment</button></div>${
+      active
+        ? `<section class="environment-dashboard"><div class="section-row"><div><span class="pill">Current environment · ${esc(active.role)}</span><h2>${esc(active.name)}</h2><p>${esc(active.description)}</p></div>${active.role === 'Admin' ? `<div class="detail-actions"><button data-action="edit-environment" data-id="${active.id}">Edit environment</button><button class="danger" data-action="delete-environment" data-id="${active.id}">Delete environment</button></div>` : ''}</div><div class="environment-counts">${Object.entries(
+            countLabels,
+          )
+            .map(
+              ([key, label]) =>
+                `<div class="stat"><span>${label}</span><strong>${active.counts[key]}</strong></div>`,
+            )
+            .join(
+              '',
+            )}</div><div class="detail-actions"><button data-action="environment-content" data-target="streams">Value streams</button><button data-action="environment-content" data-target="processes">Processes</button><button data-action="environment-content" data-target="pcf">PCF framework</button></div></section>`
+        : '<div class="empty"><h2>Create your first environment</h2><p>Its creator becomes the environment Admin and can invite existing local accounts.</p></div>'
+    }<div class="section-row"><h2>Your environments</h2><span class="label">${environmentList.length} environments</span></div><div class="grid">${environmentList.map((environment) => `<article class="environment-card"><span class="pill">${esc(environment.role)}${environment.id === active?.id ? ' · Active' : ''}</span><h3>${esc(environment.name)}</h3><p>${esc(environment.description || 'An independent local workspace.')}</p><p>${environment.counts.streams} value streams · ${environment.counts.processes} processes · ${environment.counts.pcf_entries} PCF entries</p><button data-action="switch-environment" data-id="${environment.id}" ${environment.id === active?.id ? 'disabled' : ''}>Switch environment</button></article>`).join('')}</div>${active?.role === 'Admin' ? `<section class="environment-members"><h2>Environment members</h2><p>Add existing local accounts and set their role in this environment.</p><form id="addEnvironmentMember"><label>Local username<input name="username" aria-label="Local username" required maxlength="64"></label><label>Environment role<select name="role" aria-label="Environment role"><option>Viewer</option><option>Editor</option><option>Admin</option></select></label><button type="submit">Add member</button></form><div class="table-wrap"><table><thead><tr><th>Username</th><th>Environment role</th><th>Actions</th></tr></thead><tbody>${environmentMembers.map((member) => `<tr><td>${esc(member.username)}</td><td>${esc(member.role)}</td><td><button data-action="edit-environment-member" data-id="${member.user_id}">Edit role</button><button class="danger" data-action="remove-environment-member" data-id="${member.user_id}">Remove member</button></td></tr>`).join('')}</tbody></table></div><p class="hint">The last environment Admin cannot be removed or demoted. Application accounts and other environments are unaffected by membership changes.</p></section>` : ''}`;
+  if (active?.role === 'Admin')
+    $('#addEnvironmentMember').onsubmit = async (event) => {
+      event.preventDefault();
+      const button = event.submitter;
+      button.disabled = true;
+      try {
+        await api(
+          'environments/' + active.id + '/members',
+          'POST',
+          Object.fromEntries(new FormData(event.target)),
+        );
+        await refresh();
+      } catch (e) {
+        error(e);
+        button.disabled = false;
+      }
+    };
+}
+
 function renderContent() {
   $('#breadcrumb').textContent =
     view === 'processes' ? 'Process library' : selected ? 'Value stream map' : 'Value streams';
@@ -1203,6 +1296,46 @@ $('#content').addEventListener('click', async (e) => {
   if (!el) return;
   const id = Number(el.dataset.id);
   try {
+    if (el.dataset.action === 'new-environment') return editEnvironment();
+    if (el.dataset.action === 'switch-environment') return await switchEnvironment(id);
+    if (el.dataset.action === 'environment-content') return navigate(el.dataset.target);
+    if (
+      [
+        'edit-environment',
+        'delete-environment',
+        'edit-environment-member',
+        'remove-environment-member',
+      ].includes(el.dataset.action)
+    ) {
+      if (!environmentAdmin()) return;
+      if (el.dataset.action === 'edit-environment') return editEnvironment(id);
+      if (el.dataset.action === 'delete-environment') {
+        const environment = environmentList.find((item) => item.id === id);
+        if (!environment) return;
+        if (
+          !confirm(
+            `Delete environment "${environment.name}" and ALL its value streams, delivery steps, processes, PCF entries, tags, categories, and links? This cannot be undone without a backup.`,
+          )
+        )
+          return;
+        await api('environments/' + id, 'DELETE', { confirmation: environment.name });
+        resetEnvironmentView();
+        view = 'environments';
+        await refresh();
+        return;
+      }
+      const member = environmentMembers.find((item) => item.user_id === id);
+      if (el.dataset.action === 'edit-environment-member')
+        return modal(
+          'Edit environment role',
+          `<label>Environment role<select name="role" aria-label="Environment role">${['Admin', 'Editor', 'Viewer'].map((role) => `<option ${role === member.role ? 'selected' : ''}>${role}</option>`).join('')}</select></label>`,
+          (data) => api('environments/' + session.environment.id + '/members/' + id, 'PUT', data),
+        );
+      if (!confirm('Remove this account from the environment?')) return;
+      await api('environments/' + session.environment.id + '/members/' + id, 'DELETE', {});
+      await refresh();
+      return;
+    }
     if (EDIT_ACTIONS.has(el.dataset.action) && !canEdit()) return;
     if (el.dataset.action.startsWith('pcf-import-')) {
       if (!canEdit()) return;
@@ -1278,7 +1411,7 @@ $('#content').addEventListener('click', async (e) => {
         'delete-category',
       ].includes(el.dataset.action)
     ) {
-      if (session.user?.role !== 'Admin') return;
+      if (!environmentAdmin()) return;
       if (el.dataset.action === 'new-tag') return editTag();
       if (el.dataset.action === 'edit-tag') return editTag(id);
       if (el.dataset.action === 'new-category') return editCategory();
@@ -1460,16 +1593,30 @@ function render() {
   clearTimeout(updateTimer);
   const user = session.user;
   document.body.classList.toggle('signed-out', !user);
-  $('#adminMenu').hidden = user?.role !== 'Admin';
+  $('#adminMenu').hidden = user?.role !== 'Admin' && !environmentAdmin();
+  for (const name of ['accounts', 'branding', 'backups', 'updates', 'maintenance'])
+    $('#' + name + 'Nav').hidden = user?.role !== 'Admin';
+  $('#tagsNav').hidden = !environmentAdmin();
   $('#identity').innerHTML = user
     ? /* HTML */ `
         <span>
           ${esc(user.username)}
-          <span class="pill">${esc(user.role)}</span>
+          <span class="pill" title="Application role">App ${esc(user.role)}</span>
         </span>
         <button id="logout" class="text-button">Sign out</button>
       `
     : '';
+  if (user) {
+    const identity = $('#identity');
+    const selector = document.createElement('label');
+    selector.className = 'environment-switch';
+    selector.textContent = 'Environment';
+    selector.innerHTML += `<select id="environmentSwitcher" aria-label="Active environment">${environmentList.length ? environmentList.map((environment) => `<option value="${environment.id}" ${environment.id === session.environment?.id ? 'selected' : ''}>${esc(environment.name)}</option>`).join('') : '<option value="">No environment</option>'}</select>`;
+    identity.prepend(selector);
+    $('#environmentSwitcher').disabled = !environmentList.length;
+    $('#environmentSwitcher').onchange = (event) =>
+      switchEnvironment(Number(event.target.value)).catch(error);
+  }
   if (user)
     $('#logout').onclick = async () => {
       try {
@@ -1487,6 +1634,8 @@ function render() {
   for (const name of Object.keys(VIEWS)) {
     const selector = name === 'processes' ? '#processNav' : '#' + name + 'Nav';
     $(selector).classList.toggle('active', view === name);
+    $(selector).disabled =
+      !session.environment && ['streams', 'processes', 'pcf', 'tags'].includes(name);
   }
   VIEWS[view].render();
   if (!canEdit()) {
@@ -1529,7 +1678,7 @@ function renderDataManagement() {
   const disabled = busy || !operation.available || !maintenanceState.supported;
   $('#breadcrumb').textContent = 'Administrator / Data management';
   $('#content').innerHTML =
-    `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Data management</h1><p>Clear business content after creating a local safety backup.</p></div></div><section class="data-danger-panel"><h2>Clear all business data</h2><p class="data-warning" role="note"><strong>Warning: this removes ALL value streams, delivery steps / process flows, processes, PCF entries, and their links.</strong> Accounts, branding, tag definitions, tag categories, and existing backups remain.</p><p>A full local application and database backup is required before deletion. If backup creation fails, nothing is deleted. The application restarts briefly; failed startup restores the backup. You can restore the saved backup from Backups & restore.</p><p role="status">${esc(operation.message || 'Ready')}</p>${operation.backup ? `<p>Latest operation backup: <code>${esc(operation.backup)}</code></p>` : ''}${!maintenanceState.supported ? '<p class="hint">Rerun the updated Debian installer or rebuild the Docker image once to enable safe data clearing.</p>' : ''}<form id="clearDataForm"><label>Type DELETE ALL BUSINESS DATA to confirm<input name="confirmation" aria-label="Confirmation text" autocomplete="off" required pattern="DELETE ALL BUSINESS DATA" ${disabled ? 'disabled' : ''}></label><button class="danger" type="submit" ${disabled ? 'disabled' : ''}>Create backup and clear all data</button></form></section>`;
+    `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Data management</h1><p>Clear business content after creating a local safety backup.</p></div></div><section class="data-danger-panel"><h2>Clear all business data</h2><p class="data-warning" role="note"><strong>Warning: this removes content in ALL environments: value streams, delivery steps / process flows, processes, PCF entries, and their links.</strong> Accounts, branding, tag definitions, tag categories, and existing backups remain.</p><p>A full local application and database backup is required before deletion. If backup creation fails, nothing is deleted. The application restarts briefly; failed startup restores the backup. You can restore the saved backup from Backups & restore.</p><p role="status">${esc(operation.message || 'Ready')}</p>${operation.backup ? `<p>Latest operation backup: <code>${esc(operation.backup)}</code></p>` : ''}${!maintenanceState.supported ? '<p class="hint">Rerun the updated Debian installer or rebuild the Docker image once to enable safe data clearing.</p>' : ''}<form id="clearDataForm"><label>Type DELETE ALL BUSINESS DATA to confirm<input name="confirmation" aria-label="Confirmation text" autocomplete="off" required pattern="DELETE ALL BUSINESS DATA" ${disabled ? 'disabled' : ''}></label><button class="danger" type="submit" ${disabled ? 'disabled' : ''}>Create backup and clear all data</button></form></section>`;
   $('#clearDataForm').onsubmit = async (event) => {
     event.preventDefault();
     if (
@@ -1754,15 +1903,15 @@ function renderAccounts() {
     <div class="role-guide">
       <div>
         <b>Admin</b>
-        <p>Manage accounts, updates, and all content.</p>
+        <p>Manage application accounts, backups, branding, and updates.</p>
       </div>
       <div>
         <b>Editor</b>
-        <p>Create and edit streams and processes.</p>
+        <p>Edit content in environments where this role applies.</p>
       </div>
       <div>
         <b>Viewer</b>
-        <p>Read streams and process documentation.</p>
+        <p>Read content in assigned environments.</p>
       </div>
     </div>
     <div class="section-row">
@@ -2102,7 +2251,9 @@ class StreamDiagram {
     this.svg = svg;
     this.frame = svg.closest('.diagram-frame');
     this.scene = svg.querySelector('.diagram-scene');
-    this.storageKey = `vsm-diagram-v1:${session.user.id}:${selected}`;
+    this.storageKey = `vsm-diagram-v2:${session.user.id}:${session.environment.id}:${selected}`;
+    this.legacyStorageKey =
+      session.environment.id === 1 ? `vsm-diagram-v1:${session.user.id}:${selected}` : null;
     this.nodes = new Map();
     this.edges = [];
     this.pointers = new Map();
@@ -2277,7 +2428,10 @@ class StreamDiagram {
     try {
       return (
         diagramLayouts.get(this.storageKey) ||
-        JSON.parse(localStorage.getItem(this.storageKey)) ||
+        JSON.parse(
+          localStorage.getItem(this.storageKey) ||
+            (this.legacyStorageKey ? localStorage.getItem(this.legacyStorageKey) : null),
+        ) ||
         {}
       );
     } catch {

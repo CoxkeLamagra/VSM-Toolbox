@@ -1299,3 +1299,84 @@ select:focus-visible {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.environment-switch {
+  margin: 0;
+  font-size: 10px;
+  min-width: 160px;
+  max-width: 240px;
+}
+.environment-switch select {
+  margin-top: 3px;
+  font-size: 12px;
+  padding: 7px;
+}
+.environment-dashboard,
+.environment-members {
+  background: white;
+  border: 1px solid #dce0ea;
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 26px;
+}
+.environment-dashboard h2 {
+  margin: 12px 0;
+}
+.environment-counts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 22px 0;
+}
+.environment-card {
+  background: white;
+  border: 1px solid #dce0ea;
+  border-radius: 10px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.environment-members {
+  margin-top: 28px;
+}
+.environment-members h2 {
+  margin-bottom: 12px;
+}
+#addEnvironmentMember {
+  display: flex;
+  align-items: end;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+#addEnvironmentMember label {
+  margin: 0;
+}
+#identity {
+  flex-wrap: wrap;
+}
+aside {
+  overflow-y: auto;
+}
+@media (max-width: 800px) {
+  .environment-counts {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .environment-switch {
+    min-width: 110px;
+    max-width: 130px;
+  }
+  .environment-dashboard,
+  .environment-members {
+    padding: 18px;
+  }
+  header {
+    height: auto;
+    min-height: 75px;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+}
