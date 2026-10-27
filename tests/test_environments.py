@@ -147,6 +147,45 @@ class EnvironmentTest(test_api.ApiTest):
         self.assertEqual(self.switch(1)[0], 200)
         self.assertEqual(self.request('GET', '/api/data')[1]['streams'][0]['name'], 'Private A')
 
+    def test_tag_catalog_names_and_mutations_are_environment_scoped(self):
+        original = {}
+        for table in ('tag_categories', 'tags'):
+            status, item = self.request('POST', '/api/' + table, {'name': 'Service'})
+            self.assertEqual(status, 201)
+            original[table] = item
+            self.assertEqual(self.request('POST', '/api/' + table, {'name': ' service '})[0], 400)
+        self.create()
+        own = {}
+        for table in ('tag_categories', 'tags'):
+            self.assertEqual(self.request('GET', '/api/' + table)[1], [])
+            status, item = self.request('POST', '/api/' + table, {'name': 'Service'})
+            self.assertEqual(status, 201)
+            own[table] = item
+            self.assertNotEqual(item['id'], original[table]['id'])
+            foreign = '/api/' + table + '/' + str(original[table]['id'])
+            for method, payload in [('GET', None), ('PUT', {'name': 'Changed'}), ('DELETE', None)]:
+                self.assertEqual(self.request(method, foreign, payload)[0], 404)
+        self.assertEqual(
+            self.request(
+                'PUT',
+                '/api/tags/' + str(own['tags']['id']),
+                {'category_id': original['tag_categories']['id']},
+            )[0],
+            400,
+        )
+        self.assertEqual(
+            self.request(
+                'PUT',
+                '/api/tags/' + str(own['tags']['id']),
+                {'category_id': own['tag_categories']['id']},
+            )[0],
+            200,
+        )
+        self.assertEqual(self.request('DELETE', '/api/tags/' + str(own['tags']['id']))[0], 200)
+        self.assertEqual(self.switch(1)[0], 200)
+        self.assertEqual(self.request('GET', '/api/tags')[1][0]['id'], original['tags']['id'])
+        self.assertEqual(self.request('GET', '/api/tag_categories')[1][0]['name'], 'Service')
+
     def test_membership_roles_switching_and_last_admin_protection(self):
         user, viewer = self.account()
         second = self.create()

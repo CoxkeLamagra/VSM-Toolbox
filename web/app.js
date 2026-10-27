@@ -631,8 +631,9 @@ function renderTags() {
       <div>
         <h1>Tags & categories</h1>
         <p>
-          Manage shared tags and colors. Admins and Editors can assign them to streams, steps, and
-          processes.
+          Manage tags and categories for ${esc(session.environment.name)}. Names are unique within
+          this environment. Environment Admins manage this catalog; Admins and Editors can assign
+          tags to streams, steps, and processes.
         </p>
       </div>
       <div class="detail-actions">
