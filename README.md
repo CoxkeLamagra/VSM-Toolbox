@@ -395,3 +395,9 @@ Environment API (sign-in required; mutations also require CSRF):
 `GET /api/session` includes the active `environment` (`id`, `name`, `description`, effective `role`), or null. Business resource responses include `environment_id`; that field cannot be supplied to reassign resources. API clients should switch explicitly and send `X-Environment-ID` with business requests. A stale environment header returns HTTP 409. Accounts without memberships can list/create environments but must join/select one before calling business-data APIs.
 
 Tests: the Python suite covers populated legacy migration, scope boundaries, cross-environment relationship guards, roles, membership, CSV import scoping, deletion cleanup, and multi-environment backup/restore. `node tests/environments.cjs` exercises the dashboard, switching, creator privileges, invitations, isolated content, deletion, empty-state recovery, and mobile layout.
+
+### BPMN process diagrams
+
+In **Process library**, select **Import BPMN XML** to create a process from a local `.bpmn` or `.xml` file. Existing process cards also provide an import/replace button; replacement preserves their value-stream links, tags, and documentation. Use **View BPMN diagram** to inspect the saved diagram, adjust zoom, and scroll or drag to pan. Environment Admins and Editors can import; Viewers can inspect saved diagrams.
+
+The local viewer supports BPMN 2.0 tasks, events, gateways, subprocess nodes, sequence flows, and message flows. It preserves available BPMN DI node positions and flow waypoints; missing node positions use a basic grid layout. Pools, lanes, extension graphics, and event-specific symbols are not drawn, and nested subprocess contents appear together. Files are limited to 256 KiB, 500 supported nodes, and 2,000 flows. DTDs and entity declarations are rejected. Imported XML is stored in the environment's local database and included in backups; it is never executed as a workflow.

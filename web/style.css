@@ -1422,3 +1422,33 @@ aside {
     padding-bottom: 12px;
   }
 }
+
+.bpmn-panel {
+  background: white;
+  border: 1px solid #e0e1e7;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.bpmn-canvas {
+  overflow: auto;
+  max-height: 65vh;
+  background: #f8fafc;
+  cursor: grab;
+  touch-action: pan-x pan-y;
+}
+.bpmn-canvas svg {
+  max-width: none;
+  display: block;
+}
+.bpmn-canvas text {
+  font: 12px sans-serif;
+  fill: #263252;
+}
+.bpmn-node > rect,
+.bpmn-node > ellipse,
+.bpmn-node > polygon {
+  fill: white;
+  stroke: #263252;
+  stroke-width: 2;
+}

@@ -61,6 +61,18 @@ class BackupTest(test_updater.UpdaterTest):
             self.assertEqual(archive.read('app.py'),(updater.ROOT/'app.py').read_bytes())
         self.assertTrue(self.supervisor.healthy(timeout=10))
 
+    def test_bpmn_xml_survives_restore(self):
+        xml = '<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"><process id="p"><task id="t" name="Restore me"/></process></definitions>'
+        with sqlite3.connect(self.db) as db:
+            db.execute('INSERT INTO processes(name,bpmn_xml) VALUES (?,?)', ('Imported', xml))
+        source = self.manual()
+        with sqlite3.connect(self.db) as db:
+            db.execute('DELETE FROM processes')
+        self.supervisor.maintenance({'action': 'restore', 'id': source.name})
+        self.assertEqual(updater.status()['state'], 'succeeded')
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute("SELECT bpmn_xml FROM processes WHERE name='Imported'").fetchone()[0], xml)
+
     def test_tag_catalog_and_assignments_survive_restore(self):
         with sqlite3.connect(self.db) as db:
             db.execute("INSERT INTO tag_categories(id,name) VALUES (1,'Services')")

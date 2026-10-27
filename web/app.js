@@ -36,6 +36,7 @@ const EDIT_ACTIONS = new Set([
   'new-step',
   'edit-step',
   'new-process',
+  'import-bpmn',
   'link',
   'delete-stream',
   'delete-step',
@@ -490,6 +491,78 @@ function renderStream() {
   if (streamMode === 'diagram' && items.length)
     diagramController = new StreamDiagram($('#streamDiagram'), items);
 }
+let bpmnProcessId = null;
+function importBPMN(id) {
+  const process = state.processes.find((p) => p.id === id);
+  modal(
+    process ? 'Replace BPMN diagram' : 'Import BPMN process',
+    (process
+      ? `<p>Replace the diagram for ${esc(process.name)}. Process links and tags are retained.</p>`
+      : field('name', 'Process name')) +
+      '<label>BPMN XML file<input id="bpmnFile" type="file" accept=".bpmn,.xml,text/xml,application/xml" required></label><p>Up to 256 KiB. Imports diagram data only; no workflow execution.</p>',
+    async (values) => {
+      const file = $('#bpmnFile').files[0];
+      if (!file || file.size > 262144)
+        throw new Error('Choose a BPMN XML file of at most 256 KiB.');
+      const bpmn_xml = await file.text();
+      const result = await api(
+        'processes' + (process ? '/' + process.id : ''),
+        process ? 'PUT' : 'POST',
+        process
+          ? { bpmn_xml }
+          : { name: values.name || file.name.replace(/\.(bpmn|xml)$/i, ''), bpmn_xml },
+      );
+      bpmnProcessId = process?.id || result.id;
+    },
+  );
+}
+function bpmnMarkup(process) {
+  if (!process?.bpmn) return '';
+  const { nodes, edges, omitted_flows } = process.bpmn;
+  const routePoints = edges.flatMap((edge) => edge.waypoints);
+  const left = Math.min(...nodes.map((n) => n.x), ...routePoints.map((p) => p.x)) - 40;
+  const top = Math.min(...nodes.map((n) => n.y), ...routePoints.map((p) => p.y)) - 40;
+  const width =
+    Math.max(...nodes.map((n) => n.x + n.width), ...routePoints.map((p) => p.x)) - left + 40;
+  const height =
+    Math.max(...nodes.map((n) => n.y + n.height), ...routePoints.map((p) => p.y)) - top + 40;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const flows = edges
+    .map((edge) => {
+      const a = byId.get(edge.source),
+        b = byId.get(edge.target);
+      const x = a.x + a.width / 2,
+        y = a.y + a.height / 2;
+      const tx = b.x + b.width / 2,
+        ty = b.y + b.height / 2;
+      const dx = tx - x,
+        dy = ty - y;
+      const ratio = Math.max(Math.abs(dx) / (b.width / 2), Math.abs(dy) / (b.height / 2), 1);
+      const path = edge.waypoints.length
+        ? edge.waypoints.map((p, i) => `${i ? 'L' : 'M'} ${p.x} ${p.y}`).join(' ')
+        : `M ${x} ${y} L ${tx - dx / ratio} ${ty - dy / ratio}`;
+      return `<g><path d="${path}" fill="none" stroke="#64748b" stroke-width="2" ${edge.kind === 'messageFlow' ? 'stroke-dasharray="6 4"' : ''} marker-end="url(#bpmnArrow)"/><text x="${(x + tx) / 2}" y="${(y + ty) / 2 - 8}" text-anchor="middle">${esc(edge.name)}</text></g>`;
+    })
+    .join('');
+  const shapes = nodes
+    .map((n) => {
+      const x = n.x + n.width / 2,
+        y = n.y + n.height / 2;
+      let shape;
+      if (n.kind.endsWith('Event'))
+        shape = `<ellipse cx="${x}" cy="${y}" rx="${n.width / 2}" ry="${n.height / 2}" stroke-width="${n.kind === 'endEvent' ? 4 : 2}"/>`;
+      else if (n.kind.endsWith('Gateway'))
+        shape = `<polygon points="${x},${n.y} ${n.x + n.width},${y} ${x},${n.y + n.height} ${n.x},${y}"/>`;
+      else shape = `<rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="10"/>`;
+      const words = n.name.match(/.{1,22}(?:\s|$)|.{1,22}/g) || [n.name];
+      return `<g class="bpmn-node"><title>${esc(n.kind + ': ' + n.name)}</title>${shape}<text x="${x}" y="${y - (Math.min(words.length, 3) - 1) * 8}" text-anchor="middle">${words
+        .slice(0, 3)
+        .map((word, i) => `<tspan x="${x}" dy="${i ? 16 : 0}">${esc(word.trim())}</tspan>`)
+        .join('')}</text></g>`;
+    })
+    .join('');
+  return `<section class="bpmn-panel"><h2>${esc(process.name)} · BPMN</h2><p>Scroll or drag to pan. Adjust zoom to inspect the diagram. Pools, lanes, and extension graphics are not displayed; nested subprocess nodes are shown together.</p>${omitted_flows ? `<p>${omitted_flows} flow(s) to unsupported elements omitted.</p>` : ''}<label>Diagram zoom <input id="bpmnZoom" aria-label="Diagram zoom" type="range" min="25" max="200" value="100"></label><div id="bpmnCanvas" class="bpmn-canvas" tabindex="0" aria-label="BPMN process diagram"><svg role="img" aria-label="${esc(process.name)} BPMN diagram" viewBox="${left} ${top} ${width} ${height}" width="${width}" height="${height}" data-width="${width}" data-height="${height}"><defs><marker id="bpmnArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>${flows}${shapes}</svg></div></section>`;
+}
 function renderProcesses() {
   $('#content').innerHTML = /* HTML */ `
     <div class="eyebrow">MAKE DELIVERY REPEATABLE</div>
@@ -498,8 +571,12 @@ function renderProcesses() {
         <h1>Process library</h1>
         <p>Document how your services are delivered, then connect processes to your maps.</p>
       </div>
-      <button class="primary" data-action="new-process">+ Create process</button>
+      <div class="detail-actions">
+        <button data-action="import-bpmn">Import BPMN XML</button>
+        <button class="primary" data-action="new-process">+ Create process</button>
+      </div>
     </div>
+    ${bpmnMarkup(state.processes.find((p) => p.id === bpmnProcessId))}
     ${state.processes.length
       ? /* HTML */ `
           <div class="grid">
@@ -518,6 +595,14 @@ function renderProcesses() {
                       <h3>${esc(p.name)}</h3>
                       <p>${esc(p.description || 'No description yet')}</p>
                       ${tagBadges(p)}
+                    </div>
+                    <div class="detail-actions">
+                      ${p.bpmn
+                        ? `<button data-action="view-bpmn" data-id="${p.id}">View BPMN diagram</button>`
+                        : ''}
+                      <button data-action="import-bpmn" data-id="${p.id}">
+                        ${p.bpmn ? 'Replace' : 'Import'} BPMN XML
+                      </button>
                     </div>
                     <div class="card-meta">
                       <span>${esc(p.owner || 'No owner assigned')}</span>
@@ -540,6 +625,29 @@ function renderProcesses() {
         `
       : '<div class="empty"><h2>Your shared process library</h2><p>Create processes such as incident triage, change approval, or access provisioning.<br>A process can support multiple steps across value streams.</p></div>'}
   `;
+  const canvas = $('#bpmnCanvas');
+  if (canvas) {
+    $('#bpmnZoom').oninput = (event) => {
+      const svg = canvas.querySelector('svg'),
+        scale = Number(event.target.value) / 100;
+      svg.setAttribute('width', Number(svg.dataset.width) * scale);
+      svg.setAttribute('height', Number(svg.dataset.height) * scale);
+    };
+    let drag;
+    canvas.onpointerdown = (event) => {
+      if (event.button !== 0) return;
+      drag = { x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+      canvas.setPointerCapture(event.pointerId);
+    };
+    canvas.onpointermove = (event) => {
+      if (!drag) return;
+      canvas.scrollLeft = drag.left - event.clientX + drag.x;
+      canvas.scrollTop = drag.top - event.clientY + drag.y;
+    };
+    canvas.onpointerup = canvas.onpointercancel = () => {
+      drag = null;
+    };
+  }
 }
 const field = (name, label, value = '', type = 'text') => /* HTML */ `
   <label>
@@ -1506,6 +1614,12 @@ $('#content').addEventListener('click', async (e) => {
         return editStep();
       case 'edit-step':
         return editStep(id);
+      case 'import-bpmn':
+        return importBPMN(id);
+      case 'view-bpmn':
+        bpmnProcessId = id;
+        render();
+        return $('#bpmnCanvas')?.focus();
       case 'new-process':
         return editProcess();
       case 'edit-process':

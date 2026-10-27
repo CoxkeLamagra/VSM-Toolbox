@@ -1,0 +1,12 @@
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+ xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+ xmlns:dc="http://www.omg.org/spec/DD/20100524/DC">
+ <process id="incident" name="Incident handling">
+ <startEvent id="start" name="Request"/><userTask id="triage" name="Triage &amp; assign"/>
+ <exclusiveGateway id="decision" name="Resolved?"/><endEvent id="end" name="Complete"/>
+ <sequenceFlow id="flow1" sourceRef="start" targetRef="triage"/>
+ <sequenceFlow id="flow2" sourceRef="triage" targetRef="decision"/>
+ <sequenceFlow id="flow3" sourceRef="decision" targetRef="end" name="Yes"/>
+ </process><bpmndi:BPMNDiagram><bpmndi:BPMNPlane>
+ <bpmndi:BPMNShape bpmnElement="start"><dc:Bounds x="20" y="30" width="36" height="36"/></bpmndi:BPMNShape>
+ </bpmndi:BPMNPlane></bpmndi:BPMNDiagram></definitions>
