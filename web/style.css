@@ -606,8 +606,38 @@ button:disabled {
 .update-panel code {
   overflow-wrap: anywhere;
 }
-#adminMenu .workspace {
+#adminMenu {
   margin-top: 28px;
+}
+#adminToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+#adminToggle .admin-chevron {
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+#adminToggle[aria-expanded='true'] .admin-chevron {
+  transform: rotate(180deg);
+}
+#adminEntries {
+  border-left: 1px solid color-mix(in srgb, var(--on-sidebar) 25%, transparent);
+  margin-left: 12px;
+  padding-left: 6px;
+}
+body.sidebar-collapsed #adminToggle {
+  display: block;
+  font-size: 20px;
+}
+body.sidebar-collapsed #adminToggle span {
+  display: none;
+}
+body.sidebar-collapsed #adminEntries {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
 }
 #adminMenu .nav {
   font-size: 12px;
@@ -619,6 +649,18 @@ button:disabled {
   }
   #adminMenu .nav {
     font-size: 0;
+  }
+  #adminToggle {
+    display: block;
+    font-size: 20px;
+  }
+  #adminToggle span {
+    display: none;
+  }
+  #adminEntries {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
   }
   #identity {
     gap: 10px;

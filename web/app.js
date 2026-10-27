@@ -2763,6 +2763,11 @@ class StreamDiagram {
   }
 }
 
+$('#adminToggle').onclick = () => {
+  const expanded = $('#adminToggle').getAttribute('aria-expanded') !== 'true';
+  $('#adminToggle').setAttribute('aria-expanded', String(expanded));
+  $('#adminEntries').hidden = !expanded;
+};
 $('#sidebarToggle').onclick = () => {
   const collapsed = document.body.classList.toggle('sidebar-collapsed');
   const label = collapsed ? 'Expand menu' : 'Collapse menu';

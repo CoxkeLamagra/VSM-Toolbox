@@ -28,55 +28,69 @@
         ▤ &nbsp; PCF framework
       </button>
       <div id="adminMenu" hidden>
-        <div class="workspace">ADMINISTRATOR</div>
         <button
-          id="tagsNav"
-          aria-label="Tags &amp; categories"
-          title="Tags &amp; categories"
-          class="nav"
+          id="adminToggle"
+          type="button"
+          class="nav admin-toggle"
+          aria-label="Administration"
+          title="Administration"
+          aria-expanded="false"
+          aria-controls="adminEntries"
         >
-          ◆ &nbsp; Tags &amp; categories
+          ⚙
+          <span>Administration</span>
+          <span class="admin-chevron" aria-hidden="true">⌄</span>
         </button>
-        <button
-          id="brandingNav"
-          aria-label="Branding &amp; theme"
-          title="Branding &amp; theme"
-          class="nav"
-        >
-          ◈ &nbsp; Branding &amp; theme
-        </button>
-        <button
-          id="accountsNav"
-          aria-label="Account administration"
-          title="Account administration"
-          class="nav"
-        >
-          ♙ &nbsp; Account administration
-        </button>
-        <button
-          id="backupsNav"
-          aria-label="Backups &amp; restore"
-          title="Backups &amp; restore"
-          class="nav"
-        >
-          ▣ &nbsp; Backups &amp; restore
-        </button>
-        <button
-          id="maintenanceNav"
-          aria-label="Data management"
-          title="Data management"
-          class="nav"
-        >
-          ⚠ &nbsp; Data management
-        </button>
-        <button
-          id="updatesNav"
-          aria-label="Application updates"
-          title="Application updates"
-          class="nav"
-        >
-          ↻ &nbsp; Application updates
-        </button>
+        <div id="adminEntries" hidden>
+          <button
+            id="tagsNav"
+            aria-label="Tags &amp; categories"
+            title="Tags &amp; categories"
+            class="nav"
+          >
+            ◆ &nbsp; Tags &amp; categories
+          </button>
+          <button
+            id="brandingNav"
+            aria-label="Branding &amp; theme"
+            title="Branding &amp; theme"
+            class="nav"
+          >
+            ◈ &nbsp; Branding &amp; theme
+          </button>
+          <button
+            id="accountsNav"
+            aria-label="Account administration"
+            title="Account administration"
+            class="nav"
+          >
+            ♙ &nbsp; Account administration
+          </button>
+          <button
+            id="backupsNav"
+            aria-label="Backups &amp; restore"
+            title="Backups &amp; restore"
+            class="nav"
+          >
+            ▣ &nbsp; Backups &amp; restore
+          </button>
+          <button
+            id="maintenanceNav"
+            aria-label="Data management"
+            title="Data management"
+            class="nav"
+          >
+            ⚠ &nbsp; Data management
+          </button>
+          <button
+            id="updatesNav"
+            aria-label="Application updates"
+            title="Application updates"
+            class="nav"
+          >
+            ↻ &nbsp; Application updates
+          </button>
+        </div>
       </div>
       <div class="aside-bottom">
         LOCAL WORKSPACE
