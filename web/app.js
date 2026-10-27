@@ -27,6 +27,7 @@ const MAINTENANCE_BUSY = new Set([
   'backing-up',
   'restoring',
   'cleaning',
+  'clearing',
 ]);
 const EDIT_ACTIONS = new Set([
   'new-stream',
@@ -130,6 +131,13 @@ const VIEWS = {
   pcf: { render: renderPCF },
   tags: { adminOnly: true, render: renderTags },
   branding: { adminOnly: true, render: renderBranding },
+  maintenance: {
+    adminOnly: true,
+    render: renderDataManagement,
+    load: async () => {
+      maintenanceState = await api('maintenance');
+    },
+  },
   accounts: {
     adminOnly: true,
     render: renderAccounts,
@@ -746,8 +754,8 @@ function pcfImportPanel() {
     <section id="pcfImportPanel" class="pcf-import" ${pcfImportOpen ? '' : 'hidden'}>
       <h2>Import PCF from CSV</h2>
       <p>
-        Columns: PCF ID, Hierarchy ID, Name. Hierarchy IDs determine levels and parents (for example
-        1, 1.1, 1.1.1). UTF-8 CSV, up to 256 KiB / 5000 entries.
+        Columns: PCF ID, Hierarchy ID, Name, and optional Description. Hierarchy IDs determine
+        levels and parents (for example 1, 1.1, 1.1.1). UTF-8 CSV, up to 256 KiB / 5000 entries.
       </p>
       <label>
         PCF CSV file
@@ -774,8 +782,9 @@ function renderPCFImportPreview() {
     ${preview.duplicates.length
       ? /* HTML */ `
           <p>
-            Yes overwrites the existing name, number, and parent. No keeps the existing entry.
-            Descriptions and value stream links are preserved.
+            Yes overwrites the existing name, number, and parent. No keeps the existing entry. For
+            Yes, the Description column also replaces the description (including blank values). Omit
+            that column to keep existing descriptions. Value stream links are preserved.
           </p>
           <div class="detail-actions">
             <button data-action="pcf-import-all-yes">Overwrite ALL</button>
@@ -1512,6 +1521,34 @@ function applyBranding() {
   }<span>${esc(brandSettings.name)}</span>`;
   $('.aside-bottom').innerHTML =
     `${esc(brandSettings.tagline)}<br><span>● Data stays on your server</span>`;
+}
+let maintenanceState = { operation: {}, supported: false };
+function renderDataManagement() {
+  const operation = maintenanceState.operation || {},
+    busy = MAINTENANCE_BUSY.has(operation.state);
+  const disabled = busy || !operation.available || !maintenanceState.supported;
+  $('#breadcrumb').textContent = 'Administrator / Data management';
+  $('#content').innerHTML =
+    `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Data management</h1><p>Clear business content after creating a local safety backup.</p></div></div><section class="data-danger-panel"><h2>Clear all business data</h2><p class="data-warning" role="note"><strong>Warning: this removes ALL value streams, delivery steps / process flows, processes, PCF entries, and their links.</strong> Accounts, branding, tag definitions, tag categories, and existing backups remain.</p><p>A full local application and database backup is required before deletion. If backup creation fails, nothing is deleted. The application restarts briefly; failed startup restores the backup. You can restore the saved backup from Backups & restore.</p><p role="status">${esc(operation.message || 'Ready')}</p>${operation.backup ? `<p>Latest operation backup: <code>${esc(operation.backup)}</code></p>` : ''}${!maintenanceState.supported ? '<p class="hint">Rerun the updated Debian installer or rebuild the Docker image once to enable safe data clearing.</p>' : ''}<form id="clearDataForm"><label>Type DELETE ALL BUSINESS DATA to confirm<input name="confirmation" aria-label="Confirmation text" autocomplete="off" required pattern="DELETE ALL BUSINESS DATA" ${disabled ? 'disabled' : ''}></label><button class="danger" type="submit" ${disabled ? 'disabled' : ''}>Create backup and clear all data</button></form></section>`;
+  $('#clearDataForm').onsubmit = async (event) => {
+    event.preventDefault();
+    if (
+      !confirm(
+        'FINAL WARNING: delete every value stream, delivery step / process flow, process, and PCF entry? A full local backup must be created first. Accounts, branding, tag definitions, tag categories, and backup files will remain. Continue?',
+      )
+    )
+      return;
+    const button = event.submitter;
+    button.disabled = true;
+    try {
+      await api('maintenance/clear-data', 'POST', Object.fromEntries(new FormData(event.target)));
+      await refreshMaintenance();
+    } catch (e) {
+      error(e);
+      button.disabled = false;
+    }
+  };
+  if (busy) pollMaintenance();
 }
 function renderBranding() {
   $('#breadcrumb').textContent = 'Administrator / Branding & theme';

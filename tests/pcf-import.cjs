@@ -123,6 +123,26 @@ const { spawn } = require('node:child_process');
     await page.getByRole('button', { name: 'Import entries', exact: true }).click();
     await page.getByRole('status').filter({ hasText: '5 overwritten' }).waitFor();
     assert.equal((await entries()).find((e) => e.reference === 'G').name, 'Changed group');
+    await upload(
+      'PCF ID,Hierarchy ID,Name,Description\nC,1,Changed category,"Deliver reliable IT, every day.\nKeep us connected."\nG,1.1,Changed group,Imported group description\n',
+    );
+    await page.getByRole('button', { name: 'Overwrite ALL', exact: true }).click();
+    await page.getByRole('button', { name: 'Import entries', exact: true }).click();
+    await page.getByRole('status').filter({ hasText: '2 overwritten' }).waitFor();
+    assert.equal(
+      (await entries()).find((e) => e.reference === 'C').description,
+      'Deliver reliable IT, every day.\nKeep us connected.',
+    );
+    assert.equal(
+      (await entries()).find((e) => e.reference === 'G').description,
+      'Imported group description',
+    );
+    await page.locator('.pcf-tile h3 button').click();
+    assert.equal(
+      await page.locator('.pcf-description').textContent(),
+      'Deliver reliable IT, every day.\nKeep us connected.',
+    );
+    await page.getByRole('button', { name: 'All categories', exact: true }).click();
     await upload('PCF ID,Hierarchy ID,Name\nMISSING,9.1,Orphan group\n');
     await page.getByRole('alert').filter({ hasText: 'missing parent' }).waitFor();
     assert.equal((await entries()).length, 5);

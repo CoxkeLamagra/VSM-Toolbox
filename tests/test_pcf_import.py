@@ -81,6 +81,43 @@ class PCFImportTest(test_api.ApiTest):
             self.request('GET', '/api/streams/' + str(stream['id']))[1]['pcf_ids'], [group['id']]
         )
 
+    def test_description_column_imports_updates_skips_and_preserves_when_omitted(self):
+        output = io.StringIO(newline='')
+        writer = csv.writer(output)
+        writer.writerow(['PCF ID', 'Hierarchy ID', 'Name', 'Description'])
+        description = 'Deliver reliable IT, every day.\nCustomer request: "Keep us connected."'
+        writer.writerow(['C', '1', 'IT Management', description])
+        writer.writerow(['D', '2', 'Other', 'Keep this description'])
+        text = output.getvalue()
+        _, preview = self.preview(text)
+        self.assertEqual(self.apply(text, preview)[0], 200)
+        entries = self.request('GET', '/api/pcf_entries')[1]
+        self.assertEqual(entries[0]['description'], description)
+        changed = text.replace(
+            'Deliver reliable IT, every day.', 'Updated delivery description.'
+        ).replace('Keep this description', 'Must not replace')
+        _, preview = self.preview(changed)
+        self.assertEqual(self.apply(changed, preview, {'C': 'yes', 'D': 'no'})[0], 200)
+        entries = self.request('GET', '/api/pcf_entries')[1]
+        self.assertIn('Updated delivery description.', entries[0]['description'])
+        self.assertEqual(entries[1]['description'], 'Keep this description')
+        omitted = self.csv_text([['C', '1', 'Renamed category']])
+        _, preview = self.preview(omitted)
+        self.assertEqual(self.apply(omitted, preview, {'C': 'yes'})[0], 200)
+        self.assertIn(
+            'Updated delivery description.',
+            self.request('GET', '/api/pcf_entries')[1][0]['description'],
+        )
+        empty = 'PCF ID,Hierarchy ID,Name,Description\nC,1,Renamed category,\n'
+        _, preview = self.preview(empty)
+        self.assertEqual(self.apply(empty, preview, {'C': 'yes'})[0], 200)
+        self.assertEqual(self.request('GET', '/api/pcf_entries')[1][0]['description'], '')
+
+    def test_oversized_description_rejected_without_writing(self):
+        text = 'PCF ID,Hierarchy ID,Name,Description\nC,1,Category,' + 'x' * 20001
+        self.assertEqual(self.preview(text)[0], 400)
+        self.assertEqual(self.request('GET', '/api/pcf_entries')[1], [])
+
     def test_number_swaps_and_skip_all_keep_parent_links(self):
         initial = self.csv_text([['A', '1', 'One'], ['B', '2', 'Two']])
         _, preview = self.preview(initial)

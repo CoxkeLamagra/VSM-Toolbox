@@ -1276,3 +1276,26 @@ select:focus-visible {
   color: #263c30;
   margin-bottom: 20px;
 }
+
+.data-danger-panel {
+  max-width: 900px;
+  border: 1px solid #d6a5a0;
+  border-left: 4px solid #a43737;
+  border-radius: 10px;
+  background: white;
+  padding: 28px;
+}
+.data-danger-panel p {
+  margin: 18px 0;
+  overflow-wrap: anywhere;
+}
+.data-danger-panel .data-warning {
+  color: #8c2727;
+}
+.data-danger-panel form {
+  margin-top: 24px;
+}
+.data-danger-panel code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

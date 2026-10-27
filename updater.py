@@ -40,6 +40,7 @@ BUSY = (
     'backing-up',
     'restoring',
     'cleaning',
+    'clearing',
 )
 ROOT = Path(__file__).resolve().parent
 
@@ -89,7 +90,7 @@ def status():
 
 
 def request(action, **payload):
-    if action not in ('check', 'install', 'backup', 'restore', 'cleanup'):
+    if action not in ('check', 'install', 'backup', 'restore', 'cleanup', 'clear-data'):
         raise ValueError('Unknown update action')
     base = directory()
     base.mkdir(parents=True, exist_ok=True)
@@ -490,6 +491,23 @@ def delete_backups(identifiers):
     return len(paths)
 
 
+def clear_business_data(db):
+    """Clear business records and their links, retaining accounts and settings."""
+    with sqlite3.connect(db) as conn:
+        conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute('BEGIN IMMEDIATE')
+        counts = {
+            table: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
+            for table in ('streams', 'steps', 'processes', 'pcf_entries')
+        }
+        conn.execute('DELETE FROM streams')
+        conn.execute('DELETE FROM processes')
+        # Parent deletion is RESTRICTed: remove PCF leaves before their parents.
+        for kind in ('Task', 'Activity', 'Process', 'Process Group', 'Category'):
+            conn.execute('DELETE FROM pcf_entries WHERE entry_type=?', (kind,))
+        return counts
+
+
 class Supervisor:
     def __init__(self):
         self.base = directory()
@@ -516,6 +534,7 @@ class Supervisor:
                 'message': message,
                 'current_revision': self.active['revision'],
                 'backup_protocol': 1,
+                'data_reset_protocol': 1,
                 'updated_at': time.time(),
                 **extra,
             },
@@ -526,6 +545,7 @@ class Supervisor:
             **os.environ,
             'VSM_UPDATER': '1',
             'VSM_BACKUP_PROTOCOL': '1',
+            'VSM_DATA_RESET_PROTOCOL': '1',
             'VSM_UPDATE_DIR': str(self.base),
             'VSM_DATABASE': str(self.db),
             'VSM_REVISION': self.active['revision'],
@@ -688,6 +708,36 @@ class Supervisor:
                 safety = create_backup(self.active, self.db, 'manual')
                 self.report(
                     'succeeded', 'Application and database backup created.', backup=str(safety)
+                )
+                return
+            if action == 'clear-data':
+                self.report(
+                    'clearing', 'Creating a full safety backup before clearing business data…'
+                )
+                self.stop()
+                safety = create_backup(self.active, self.db, 'pre-data-clear')
+                atomic_json(
+                    self.base / 'pending.json',
+                    {'previous': dict(self.active), 'backup': str(safety), 'bundle': True},
+                )
+                pending = True
+                counts = clear_business_data(self.db)
+                self.report(
+                    'restarting',
+                    'Starting the application after clearing business data…',
+                    backup=str(safety),
+                )
+                self.start()
+                if not self.healthy():
+                    raise RuntimeError('Application failed its health check after clearing data')
+                (self.base / 'pending.json').unlink()
+                pending = False
+                committed = True
+                self.report(
+                    'succeeded',
+                    'Value streams, delivery steps, processes, and PCF entries cleared. Accounts, branding, tags, and backups were retained.',
+                    backup=str(safety),
+                    cleared=counts,
                 )
                 return
             if action != 'restore':

@@ -255,14 +255,14 @@ def integer_ids(value, field):
     return value
 
 
-ADMIN_READ_PATHS = ('/api/roles', '/api/users', '/api/updates', '/api/backups')
+ADMIN_READ_PATHS = ('/api/roles', '/api/users', '/api/updates', '/api/backups', '/api/maintenance')
 STATIC_ASSETS = {
     '/': ('index.html', 'text/html'),
     '/app.js': ('app.js', 'text/javascript'),
     '/style.css': ('style.css', 'text/css'),
 }
 CONTENT_SECURITY_POLICY = "default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'"
-WRITES_PAUSED = ('installing', 'restarting', 'backing-up', 'restoring')
+WRITES_PAUSED = ('installing', 'restarting', 'backing-up', 'restoring', 'clearing')
 
 
 def branding_stylesheet(theme, tag_colors):
@@ -551,6 +551,11 @@ def parse_pcf_csv(text):
                 raise ValueError(
                     f'CSV line {line}: duplicate PCF ID or Hierarchy ID inside the file'
                 )
+            description = raw.get('Description') or ''
+            if len(description) > 20000:
+                raise ValueError(
+                    f'CSV line {line}: Description must contain at most 20000 characters'
+                )
             references.add(reference.casefold())
             indexes.add(index)
             rows.append(
@@ -561,6 +566,7 @@ def parse_pcf_csv(text):
                     'index': index,
                     'number': numbers[-1],
                     'entry_type': PCF_TYPES[len(numbers) - 1],
+                    **({'description': description} if 'Description' in headers else {}),
                 }
             )
             if len(rows) > PCF_CSV_ROWS:
@@ -669,6 +675,7 @@ class PCFImporter:
                 **model.get(ident, {'id': ident, 'description': ''}),
                 **{key: row[key] for key in ('name', 'reference', 'entry_type', 'number')},
                 'parent_id': parent_id,
+                **({'description': row['description']} if 'description' in row else {}),
             }
             changed.append(ident)
         slots = set()
@@ -967,6 +974,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(exc.status, {'error': str(exc)})
 
     def read_api(self, conn, path):
+        if path == '/api/maintenance':
+            operation = updater.status()
+            return {
+                'operation': operation,
+                'supported': os.environ.get('VSM_DATA_RESET_PROTOCOL') == '1'
+                and operation.get('data_reset_protocol') == 1,
+            }
         if path == '/api/backups':
             return {
                 'backups': updater.list_backups(),
@@ -1164,6 +1178,26 @@ class Handler(BaseHTTPRequestHandler):
                     '/api/updates/install',
                 ):
                     result = self.maintenance_request(conn, path, data)
+                    status, cookie = 202, None
+                elif path == '/api/maintenance/clear-data' and method == 'POST':
+                    self.require_user(conn, ('Admin',), csrf=True)
+                    self.require_backup_engine()
+                    if (
+                        os.environ.get('VSM_DATA_RESET_PROTOCOL') != '1'
+                        or updater.status().get('data_reset_protocol') != 1
+                    ):
+                        raise ApiError(
+                            409,
+                            'Rerun the Debian installer or rebuild the Docker image to enable safe data clearing.',
+                        )
+                    if data != {'confirmation': 'DELETE ALL BUSINESS DATA'}:
+                        raise ValueError(
+                            'Type DELETE ALL BUSINESS DATA to confirm clearing business data'
+                        )
+                    try:
+                        result = updater.request('clear-data')
+                    except RuntimeError as exc:
+                        raise ApiError(409, str(exc)) from exc
                     status, cookie = 202, None
                 elif (
                     path in ('/api/pcf_import/preview', '/api/pcf_import/apply')

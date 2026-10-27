@@ -314,21 +314,22 @@ Select **Import from CSV** next to **Add PCF entry** on the PCF framework screen
 | `PCF ID` | APQC reference ID |
 | `Hierarchy ID` | Full hierarchy index; its last component becomes the entry's sibling number |
 | `Name` | Entry name |
+| `Description` (optional) | Entry description; quoted multiline text is supported |
 
 ```csv
-PCF ID,Hierarchy ID,Name
-10001,1.0,IT Management
-10002,1.1,Fault to Restoration
-10003,1.1.1,Incident Management
-10004,1.1.1.1,Register Incident
-10005,1.1.1.1.1,Create ticket
+PCF ID,Hierarchy ID,Name,Description
+10001,1.0,IT Management,Manage IT services and capabilities.
+10002,1.1,Fault to Restoration,Restore service after a fault.
+10003,1.1.1,Incident Management,Coordinate incident resolution.
+10004,1.1.1.1,Register Incident,Record the reported incident.
+10005,1.1.1.1.1,Create ticket,Create a service desk ticket.
 ```
 
-One through five numeric components identify Category, Process Group, Process, Activity, and Task respectively. A top-level APQC index such as `1.0` is accepted as category `1`; ordinary `1` is also accepted. Parents must be included in the CSV or already exist at the requested index. Rows can be in any order. The importer supports UTF-8 (with or without BOM), quoted fields and multiline names, and comma/semicolon/tab separators. Files are limited to 256 KiB and 5000 entries. PCF ID and Name are required and limited to 200 characters; numbers must be positive integers up to 999999. Extra columns are ignored.
+One through five numeric components identify Category, Process Group, Process, Activity, and Task respectively. A top-level APQC index such as `1.0` is accepted as category `1`; ordinary `1` is also accepted. Parents must be included in the CSV or already exist at the requested index. Rows can be in any order. The importer supports UTF-8 (with or without BOM), quoted fields and multiline names, and comma/semicolon/tab separators. Files are limited to 256 KiB and 5000 entries. PCF ID and Name are required and limited to 200 characters; numbers must be positive integers up to 999999. Description is optional and limited to 20000 characters. Other extra columns are ignored.
 
 The preview makes no changes. APQC reference IDs are compared after trimming whitespace, without case sensitivity. Each duplicate shows the existing entry and the incoming name/index with a **Yes / No** overwrite selector. **Overwrite ALL** sets every duplicate to Yes; **Skip ALL** sets every duplicate to No. Individual choices can still be changed afterward. Select **Import entries** to save new entries and apply your choices.
 
-- **Yes** updates the existing name, reference, hierarchy number, and parent. Its ID, description, and value stream links are preserved.
+- **Yes** updates the existing name, reference, hierarchy number, and parent. Its ID and value stream links are preserved. When the optional Description column is present, it replaces the description; a blank value clears it. If the column is absent, the existing description is preserved.
 - **No** retains the existing entry. Imported children referencing that CSV parent attach to the retained entry, so their resulting index follows its actual location.
 - New reference IDs are created. A different reference already occupying the requested index is never silently overwritten; the whole import stops with an error.
 - Repeated references or normalized indexes within the file, ambiguous existing reference IDs, missing parents, and incompatible final hierarchies are rejected. Resolve those ambiguities before importing.
@@ -337,3 +338,17 @@ The preview makes no changes. APQC reference IDs are compared after trimming whi
 API endpoints: `POST /api/pcf_import/preview` accepts `{"csv":"..."}` and returns totals, duplicate details, and a framework `fingerprint`. `POST /api/pcf_import/apply` accepts the same CSV, that fingerprint, and a `decisions` object mapping every duplicate's incoming reference ID to `"yes"` or `"no"`. Both endpoints require an Admin/Editor session and CSRF token. The apply response contains `created`, `updated`, and `skipped` counts.
 
 Tests: `python3 -m unittest discover -s tests -v` and `node tests/pcf-import.cjs` using the existing browser-test environment options.
+
+### Clear all business data
+
+Admins can open **Administrator → Data management** to clear all value streams, their delivery steps / process flows, process-library entries, PCF classifications, and their links. **Accounts, sessions, branding, tag definitions/categories, and existing backup files are retained.** Editors and Viewers cannot access or execute the action.
+
+The action requires typing **DELETE ALL BUSINESS DATA** and accepting an additional final warning. The supervisor stops the web process, creates a full local application-and-database backup with reason `pre-data-clear`, records recovery information, and only then deletes business content in a database transaction. If backup creation fails, deletion is not attempted. Failed deletion rolls back; failed startup restores the safety backup. An interrupted operation with a pending recovery record is recovered on supervisor startup. After a successful clear, the saved backup can be restored through **Backups & restore**; restoring also restores its accounts/data and revokes sessions as usual.
+
+The application restarts briefly during clearing, and the UI polls until it returns. Retained records are not deleted and database identifiers are not deliberately reset. This is a logical content reset, not secure erasure; backup archives still contain the previous business data.
+
+**Enable the updated supervisor once:** rerun this version's Debian installer or rebuild/recreate the Docker container using its existing data volume. Web-only updates do not replace the running supervisor. The UI and API reject clearing when the engine lacks the new capability, rather than attempting deletion without a guaranteed backup.
+
+API: Admin-only `GET /api/maintenance` reports operation status and capability. `POST /api/maintenance/clear-data` requires an Admin session, CSRF token, and exactly `{"confirmation":"DELETE ALL BUSINESS DATA"}`; it queues the backup-first supervisor operation and returns HTTP 202. Normal writes pause while the clear runs. The shared maintenance queue prevents simultaneous update, backup, restore, cleanup, or clear operations.
+
+Verification: the Python regression suite includes backup failure, transaction rollback, failed-startup recovery, retained configuration, restoration, role, CSRF, and exact-confirmation checks. `node tests/data-management.cjs` uses a disposable local instance to verify warning cancellation, backup creation, clearing, full restoration, and Viewer restrictions.
