@@ -82,6 +82,8 @@ const { spawn } = require('node:child_process');
     });
     let approve = false;
     page.on('dialog', (dialog) => (approve ? dialog.accept() : dialog.dismiss()));
+    if ((await page.locator('#adminToggle').getAttribute('aria-expanded')) !== 'true')
+      await page.locator('#adminToggle').click();
     await page.locator('#maintenanceNav').click();
     await page.getByRole('heading', { name: 'Data management', exact: true }).waitFor();
     await page.getByLabel('Confirmation text', { exact: true }).fill('DELETE ALL BUSINESS DATA');
@@ -119,6 +121,8 @@ const { spawn } = require('node:child_process');
     assert.equal(after.branding.name, 'Retained workspace');
     const backup = after.backups.find((e) => e.reason === 'pre-data-clear');
     assert.ok(backup, 'A safety backup must exist');
+    if ((await page.locator('#adminToggle').getAttribute('aria-expanded')) !== 'true')
+      await page.locator('#adminToggle').click();
     await page.locator('#backupsNav').click();
     await page.locator(`[data-action="restore-backup"][data-backup="${backup.id}"]`).click();
     await page

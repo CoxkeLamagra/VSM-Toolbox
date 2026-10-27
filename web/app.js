@@ -116,17 +116,8 @@ async function refresh() {
     return;
   }
   environmentList = await api('environments');
-  if (!session.environment) {
-    view = 'environments';
-    state = null;
-  } else {
-    if (
-      (VIEWS[view].adminOnly && session.user.role !== 'Admin') ||
-      (VIEWS[view].environmentAdminOnly && !environmentAdmin())
-    )
-      view = 'streams';
-    state = await api('data');
-  }
+  if (!canAccessView(view)) view = session.environment ? 'streams' : 'environments';
+  state = session.environment ? await api('data') : null;
   applyBranding();
   await VIEWS[view].load?.();
   render();
@@ -180,8 +171,18 @@ const VIEWS = {
     },
   },
 };
+function canAccessView(name) {
+  const page = VIEWS[name];
+  if (!page || !session.user) return false;
+  if (page.adminOnly) return session.user.role === 'Admin';
+  if (page.environmentAdminOnly) return environmentAdmin();
+  return name === 'environments' || Boolean(session.environment);
+}
+function navigationButton(name) {
+  return $(name === 'processes' ? '#processNav' : '#' + name + 'Nav');
+}
 function navigate(nextView) {
-  view = !session.environment && !VIEWS[nextView].adminOnly ? 'environments' : nextView;
+  view = canAccessView(nextView) ? nextView : 'environments';
   selected = null;
   if (VIEWS[view].adminOnly || VIEWS[view].environmentAdminOnly || view === 'environments')
     refresh().catch(error);
@@ -1595,9 +1596,10 @@ function render() {
   const user = session.user;
   document.body.classList.toggle('signed-out', !user);
   $('#adminMenu').hidden = user?.role !== 'Admin' && !environmentAdmin();
-  for (const name of ['accounts', 'branding', 'backups', 'updates', 'maintenance'])
-    $('#' + name + 'Nav').hidden = user?.role !== 'Admin';
-  $('#tagsNav').hidden = !environmentAdmin();
+  for (const [name, page] of Object.entries(VIEWS)) {
+    if (page.adminOnly || page.environmentAdminOnly)
+      navigationButton(name).hidden = !canAccessView(name);
+  }
   $('#identity').innerHTML = user
     ? /* HTML */ `
         <span>
@@ -1633,10 +1635,9 @@ function render() {
     };
   if (!user) return renderAuth();
   for (const name of Object.keys(VIEWS)) {
-    const selector = name === 'processes' ? '#processNav' : '#' + name + 'Nav';
-    $(selector).classList.toggle('active', view === name);
-    $(selector).disabled =
-      !session.environment && ['streams', 'processes', 'pcf', 'tags'].includes(name);
+    const button = navigationButton(name);
+    button.classList.toggle('active', view === name);
+    button.disabled = !canAccessView(name);
   }
   VIEWS[view].render();
   if (!canEdit()) {
@@ -2779,8 +2780,7 @@ $('#sidebarToggle').onclick = () => {
 };
 
 for (const name of Object.keys(VIEWS)) {
-  const selector = name === 'processes' ? '#processNav' : '#' + name + 'Nav';
-  $(selector).onclick = () => navigate(name);
+  navigationButton(name).onclick = () => navigate(name);
 }
 
 refresh().catch(error);

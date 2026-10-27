@@ -120,6 +120,7 @@ const { spawn } = require('node:child_process');
       await page.getByRole('button', { name: 'Delete environment', exact: true }).isVisible(),
     );
     assert.equal(await page.locator('#accountsNav').isVisible(), false);
+    await page.locator('#adminToggle').click();
     assert.equal(await page.locator('#tagsNav').isVisible(), true);
     await page.screenshot({ path: '/tmp/vsm-environments-dashboard.png', fullPage: true });
     page.once('dialog', (d) => d.accept());
@@ -153,6 +154,12 @@ const { spawn } = require('node:child_process');
       .getByRole('heading', { name: 'Create your first environment', exact: true })
       .waitFor();
     assert.equal(await page.locator('#streamsNav').isDisabled(), true);
+    if ((await page.locator('#adminToggle').getAttribute('aria-expanded')) !== 'true')
+      await page.locator('#adminToggle').click();
+    await page.locator('#accountsNav').click();
+    await page.getByRole('heading', { name: 'Account administration', exact: true }).waitFor();
+    assert.equal(await page.locator('#tagsNav').isVisible(), false);
+    await page.locator('#environmentsNav').click();
     await page.getByRole('button', { name: 'Create environment' }).click();
     await page.getByLabel('Environment name').fill('Fresh workspace');
     await page.getByRole('button', { name: 'Save changes', exact: true }).click();

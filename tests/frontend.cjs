@@ -79,3 +79,42 @@ assert.equal(href, initial, 'Sign-in branding must work without workspace data')
 console.log(
   'Frontend helper tests passed: tag form encoding, stable stylesheet loading, large catalogs, color changes, and sign-in.',
 );
+
+// Application administration and environment permissions are independent.
+const access = vm.createContext({
+  VIEWS: {
+    streams: {},
+    environments: {},
+    tags: { environmentAdminOnly: true },
+    accounts: { adminOnly: true },
+  },
+  session: {},
+  environmentAdmin: () => access.session.environment?.role === 'Admin',
+});
+vm.runInContext(
+  source.slice(
+    source.indexOf('function canAccessView('),
+    source.indexOf('function navigationButton('),
+  ),
+  access,
+);
+assert.equal(access.canAccessView('environments'), false);
+access.session = { user: { role: 'Admin' } };
+assert.equal(
+  access.canAccessView('accounts'),
+  true,
+  'App Admin retains global pages with no environment',
+);
+assert.equal(access.canAccessView('streams'), false);
+assert.equal(access.canAccessView('tags'), false);
+assert.equal(access.canAccessView('environments'), true);
+for (const role of ['Viewer', 'Editor', 'Admin']) {
+  access.session = { user: { role: 'Viewer' }, environment: { role } };
+  assert.equal(access.canAccessView('streams'), true);
+  assert.equal(access.canAccessView('accounts'), false);
+  assert.equal(access.canAccessView('tags'), role === 'Admin');
+}
+assert.equal(access.canAccessView('unknown'), false);
+console.log(
+  'Page access checks passed: signed out, no environment, application and environment roles.',
+);
