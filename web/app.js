@@ -1785,7 +1785,7 @@ function applyBranding() {
       : '<b aria-hidden="true">◈</b>'
   }<span>${esc(brandSettings.name)}</span>`;
   $('.aside-bottom').innerHTML =
-    `${esc(brandSettings.tagline)}<br><span>● Data stays on your server</span>`;
+    `<div class="footer-details">${esc(brandSettings.tagline)}<br><span>● Data stays on your server</span></div><a class="app-version" href="https://github.com/CoxkeLamagra/VSM-Toolbox" target="_blank" rel="noopener noreferrer" title="${esc('GitHub repository · Revision: ' + (session.revision || 'local'))}">v${esc(session.version || 'development')}</a>`;
 }
 let maintenanceState = { operation: {}, supported: false };
 function renderDataManagement() {

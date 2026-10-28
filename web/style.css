@@ -1452,3 +1452,28 @@ aside {
   stroke: #263252;
   stroke-width: 2;
 }
+
+.app-version {
+  display: inline-block;
+  color: var(--on-sidebar);
+  font-size: 11px;
+  letter-spacing: 0;
+  margin-top: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.app-version:hover,
+.app-version:focus-visible {
+  opacity: 0.8;
+}
+body.sidebar-collapsed .aside-bottom {
+  display: block;
+  text-align: center;
+}
+body.sidebar-collapsed .footer-details {
+  display: none;
+}
+body.sidebar-collapsed .app-version {
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}

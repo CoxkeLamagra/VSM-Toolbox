@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import updater
 
 UPDATE_PROTOCOL = 1
+APP_VERSION = '0.7.0-dev'
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('VSM_DATABASE', ROOT / 'data' / 'vsm.sqlite3'))
 
@@ -1611,6 +1612,8 @@ class Handler(BaseHTTPRequestHandler):
                         'user': public_user(user) if user else None,
                         'csrf_token': user['csrf_token'] if user else None,
                         'environment': self.selected_environment(conn, user) if user else None,
+                        'version': APP_VERSION,
+                        'revision': os.environ.get('VSM_REVISION', 'local'),
                         'setup_required': not bool(
                             conn.execute('SELECT 1 FROM users LIMIT 1').fetchone()
                         ),
