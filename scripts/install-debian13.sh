@@ -16,16 +16,23 @@ ACTIVATED=0
 HAD_UNIT=0
 WAS_ACTIVE=0
 WAS_ENABLED=0
+HTTPS_IP=
+TLS_ACTIVATED=0
+NGINX_WAS_ACTIVE=0
+NGINX_WAS_ENABLED=0
+HTTPS_FILES=(/etc/vsm-toolbox/tls/certificate.pem /etc/vsm-toolbox/tls/private-key.pem /etc/vsm-toolbox/https.env /etc/systemd/system/vsm-toolbox.service.d/https.conf /etc/nginx/conf.d/vsm-toolbox-https.conf)
 
 usage() {
     cat <<'HELP'
-Usage: bash install-debian13.sh [--ref TAG_OR_COMMIT] [--source-dir DIRECTORY]
+Usage: bash install-debian13.sh [--ref TAG_OR_COMMIT] [--source-dir DIRECTORY] [--https-ip IPV4]
 
 Run as root inside a Debian 13 LXC with systemd and Internet access.
 By default fetches main from CoxkeLamagra/VSM-Toolbox over HTTPS.
 --ref selects a branch, tag, or commit; --source-dir installs a local checkout
 instead (mutually exclusive with --ref). Existing database data is preserved.
-Installs on loopback port 8080. Use an HTTPS reverse proxy or SSH tunnel for access.
+Installs HTTPS on the main IPv4 address at port 443 with a self-signed certificate.
+--https-ip selects a specific local IPv4 address instead of detecting it.
+HTTP redirects to HTTPS. The application backend remains on loopback port 8080.
 HELP
 }
 REF_SET=0
@@ -35,6 +42,9 @@ while (($#)); do
             (($# >= 2)) || { usage >&2; exit 2; }
             if [[ $1 == --ref ]]; then REF=$2; REF_SET=1; else SOURCE=$2; fi
             shift 2 ;;
+        --https-ip)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            HTTPS_IP=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -65,6 +75,15 @@ cleanup() {
     trap - EXIT
     if ((status != 0)); then
         echo 'Installation failed.' >&2
+        if ((TLS_ACTIVATED)); then
+            for index in "${!HTTPS_FILES[@]}"; do
+                if [[ -e $TEMP/https-backup/$index ]]; then
+                    cp -p "$TEMP/https-backup/$index" "${HTTPS_FILES[$index]}"
+                else
+                    rm -f -- "${HTTPS_FILES[$index]}"
+                fi
+            done
+        fi
         if ((ACTIVATED)); then
             systemctl stop vsm-toolbox || true
             if [[ -n $PREVIOUS ]]; then
@@ -84,6 +103,10 @@ cleanup() {
             echo 'Previous application/service restored. Database and backups were retained.' >&2
         fi
     fi
+    if ((status != 0 && TLS_ACTIVATED)); then
+        if ((NGINX_WAS_ENABLED)); then systemctl enable nginx || true; else systemctl disable nginx || true; fi
+        if ((NGINX_WAS_ACTIVE)); then nginx -t && systemctl reload-or-restart nginx || true; else systemctl stop nginx || true; fi
+    fi
     [[ -z $TEMP ]] || rm -rf -- "$TEMP"
     exit "$status"
 }
@@ -93,7 +116,7 @@ trap 'exit 143' TERM
 export DEBIAN_FRONTEND=noninteractive
 echo 'Installing Debian runtime components...'
 apt-get -o APT::Update::Error-Mode=any update
-apt-get install -y --no-install-recommends python3 git ca-certificates curl passwd
+apt-get install -y --no-install-recommends python3 git ca-certificates curl passwd nginx openssl iproute2
 python3 -c 'import sqlite3; assert sqlite3.sqlite_version_info >= (3, 24)'
 TEMP=$(mktemp -d /opt/.vsm-install.XXXXXXXX)
 if [[ -n $SOURCE ]]; then
@@ -105,9 +128,29 @@ else
     git -C "$TEMP/source" checkout -q --detach FETCH_HEAD
     SOURCE=$TEMP/source
 fi
-for file in app.py updater.py update-manifest.json web/index.html web/app.js web/style.css deploy/vsm-toolbox.service; do
+for file in app.py updater.py update-manifest.json web/index.html web/app.js web/style.css deploy/vsm-toolbox.service scripts/prepare-https.py; do
     [[ -f $SOURCE/$file && ! -L $SOURCE/$file ]] || { echo "Required source file missing or symlinked: $file" >&2; exit 1; }
 done
+# Select a specific local IPv4 address. Route lookup does not send traffic.
+if [[ -z $HTTPS_IP ]]; then
+    HTTPS_IP=$(ip -j -4 route get 1.1.1.1 | python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0].get("prefsrc", ""))')
+fi
+ip -j -4 address show | python3 -c 'import ipaddress,json,sys; requested=str(ipaddress.IPv4Address(sys.argv[1])); local={a["local"] for interface in json.load(sys.stdin) for a in interface.get("addr_info",[]) if a.get("family")=="inet"}; assert requested in local, "HTTPS IP must be assigned to this machine"' "$HTTPS_IP"
+if [[ -e /etc/nginx/conf.d/vsm-toolbox-https.conf ]]; then
+    head -1 /etc/nginx/conf.d/vsm-toolbox-https.conf | grep -q '^# VSM Toolbox managed HTTPS' || {
+        echo 'Existing Nginx VSM configuration is unmanaged; refusing to overwrite it.' >&2; exit 1;
+    }
+fi
+for file in "${HTTPS_FILES[@]}"; do
+    [[ ! -L $file ]] || { echo "Refusing symlinked HTTPS configuration: $file" >&2; exit 1; }
+done
+python3 "$SOURCE/scripts/prepare-https.py" --ip "$HTTPS_IP" --output "$TEMP/https" --certificate-dir /etc/vsm-toolbox/tls
+install -d -m 0700 "$TEMP/https-backup"
+for index in "${!HTTPS_FILES[@]}"; do
+    if [[ -f ${HTTPS_FILES[$index]} ]]; then cp -p "${HTTPS_FILES[$index]}" "$TEMP/https-backup/$index"; fi
+done
+if systemctl is-active --quiet nginx; then NGINX_WAS_ACTIVE=1; fi
+if systemctl is-enabled --quiet nginx; then NGINX_WAS_ENABLED=1; fi
 # Do not adopt an existing account with unexpected privileges.
 if getent passwd vsm >/dev/null; then
     [[ $(id -u vsm) != 0 && $(id -gn vsm) == vsm && $(id -G vsm | wc -w) == 1 ]] || {
@@ -168,6 +211,15 @@ rm -f "$UPDATE_ACTIVE"
 ln -s "$NEW" "$TEMP/new-link"
 mv -Tf "$TEMP/new-link" "$APP"
 install -m 0644 "$SOURCE/deploy/vsm-toolbox.service" "$UNIT"
+TLS_ACTIVATED=1
+install -d -m 0700 /etc/vsm-toolbox /etc/vsm-toolbox/tls
+install -d -m 0755 /etc/systemd/system/vsm-toolbox.service.d /etc/nginx/conf.d
+install -m 0644 "$TEMP/https/certificate.pem" /etc/vsm-toolbox/tls/certificate.pem
+install -m 0600 "$TEMP/https/private-key.pem" /etc/vsm-toolbox/tls/private-key.pem
+install -m 0600 "$TEMP/https/https.env" /etc/vsm-toolbox/https.env
+install -m 0644 "$TEMP/https/https.conf" /etc/systemd/system/vsm-toolbox.service.d/https.conf
+install -m 0644 "$TEMP/https/nginx.conf" /etc/nginx/conf.d/vsm-toolbox-https.conf
+nginx -t
 systemctl daemon-reload
 systemctl enable vsm-toolbox
 systemctl is-enabled --quiet vsm-toolbox || { echo 'Service was not enabled for boot.' >&2; exit 1; }
@@ -188,10 +240,19 @@ if ((READY == 0)); then
 fi
 curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/session | \
     python3 -c 'import json,sys; data=json.load(sys.stdin); assert "setup_required" in data and "user" in data'
+systemctl enable nginx
+systemctl is-enabled --quiet nginx
+systemctl reload-or-restart nginx
+curl --noproxy '*' --fail --silent --max-time 10 --cacert /etc/vsm-toolbox/tls/certificate.pem "https://$HTTPS_IP/api/health" | \
+    python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
+REDIRECT=$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://$HTTPS_IP/")
+[[ $REDIRECT == 301 ]] || { echo 'HTTPS redirect health check failed.' >&2; exit 1; }
 ACTIVATED=0
-printf '\nVSM Toolbox installed and healthy.\nBackend: http://127.0.0.1:8080 (loopback only). Configure an HTTPS reverse proxy or SSH tunnel.\n'
+TLS_ACTIVATED=0
+printf '\nVSM Toolbox installed and healthy.\nOpen https://%s/\n' "$HTTPS_IP"
 echo "Database: $DATA/vsm.sqlite3"
-echo 'Boot startup: enabled (systemd vsm-toolbox.service)'
-echo 'Logs: journalctl -u vsm-toolbox -f'
-echo 'For temporary access: ssh -L 8080:127.0.0.1:8080 root@<LXC-IP>, then open http://127.0.0.1:8080 locally.'
-echo 'For HTTPS setup see deploy/nginx-vsm-toolbox.conf and README.md. Create the first Admin through that protected connection.'
+echo 'Boot startup: application and nginx enabled'
+echo 'The self-signed certificate causes a browser warning until trusted on your devices.'
+echo 'Public certificate: /etc/vsm-toolbox/tls/certificate.pem (never distribute the private key).'
+echo 'Backend: 127.0.0.1:8080. Managed HTTPS settings override conflicting /etc/default/vsm-toolbox values.'
+echo 'Rerun the installer before certificate expiry (365 days), or after changing the server IP.'

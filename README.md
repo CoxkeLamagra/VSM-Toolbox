@@ -45,7 +45,7 @@ Optional browser integration checks run against a temporary database and server,
 
 Create a Debian 13 LXC using your container host's standard template, assign a stable address, and enable networking. No privileged container, Docker nesting, or external database is required. A small container with 1 CPU and 512 MB RAM is a reasonable starting allocation; size storage for your database and backups.
 
-The installer installs Python 3, Git, CA certificates, curl, and account-management tools; creates an unprivileged `vsm` account; installs the application; enables the systemd service at boot; and waits for a successful API health check. It does not require pip, Docker, or an external database.
+The installer installs Python 3, Git, CA certificates, curl, Nginx, OpenSSL, iproute2, and account-management tools; creates an unprivileged `vsm` account; installs the application; enables the systemd service at boot; and waits for a successful API health check. It does not require pip, Docker, or an external database.
 
 Run as root **inside the LXC**. From a checkout containing this installer:
 
@@ -65,9 +65,9 @@ curl --fail --show-error --location \
 bash /root/install-vsm-toolbox.sh
 ```
 
-The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. This installer requires a revision containing `updater.py` and `update-manifest.json`; the older `v0.1.0` tag predates this update protocol and requires its original installer instructions. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
+The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. This installer requires a revision containing `updater.py`, `update-manifest.json`, and `scripts/prepare-https.py`; the older `v0.1.0` tag predates this update protocol and requires its original installer instructions. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
 
-Open `http://<LXC-IP>:8080` from your trusted network. Installation paths:
+Open `https://<LXC-IP>/` from your trusted network. The browser warns about the self-signed certificate until you trust it. Installation paths:
 
 | Path | Purpose |
 |---|---|
@@ -79,11 +79,11 @@ Open `http://<LXC-IP>:8080` from your trusted network. Installation paths:
 
 Run the same installer again to update or reinstall. It preserves the database, backs it up before changing the running application, installs code in a new release directory, and switches the active symlink. If startup fails it restores the previous application and service state; database backups remain available, but the database is not automatically reverted. Package installations are not rolled back. Old code releases and backups are retained; review disk usage periodically.
 
-The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation that it did not create. To migrate the earlier manual installation, stop `vsm-toolbox`, back up `/var/lib/vsm-toolbox/vsm.sqlite3`, and move the old `/opt/vsm-toolbox` directory to a safe archive path before running the installer. The existing `vsm` account must be non-root and belong only to its private `vsm` group. Existing systemd drop-ins are preserved; incompatible custom overrides can cause the health check to fail.
+The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation that it did not create. To migrate the earlier manual installation, stop `vsm-toolbox`, back up `/var/lib/vsm-toolbox/vsm.sqlite3`, and move the old `/opt/vsm-toolbox` directory to a safe archive path before running the installer. The existing `vsm` account must be non-root and belong only to its private `vsm` group. Other systemd drop-ins are preserved; the installer manages its own `https.conf` drop-in. Incompatible custom overrides can cause the health check to fail.
 
 The installer starts the unprivileged update supervisor, which manages the web process.
 
-Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds to loopback by default; it does not modify your firewall or install a reverse proxy. Use an HTTPS proxy or SSH tunnel for remote access. No privileged LXC features or Docker nesting are needed.
+Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer configures Nginx HTTPS on the main IPv4 address at port 443, redirects port 80, and keeps the application on loopback port 8080. It does not modify your firewall. No privileged LXC features or Docker nesting are needed.
 
 ## Automatic startup after reboot
 
@@ -405,17 +405,28 @@ The local viewer supports BPMN 2.0 tasks, events, gateways, subprocess nodes, se
 
 ### Protected deployment after the security fixes
 
-The Debian service now defaults to `VSM_HOST=127.0.0.1`. Existing `/etc/default/vsm-toolbox` overrides still take precedence: remove an old `VSM_HOST=0.0.0.0` override if the proxy is on the same machine. UI application updates cannot replace your systemd unit or proxy settings; rerun the Debian installer (or update the service configuration and restart) to apply the loopback default. Boot startup remains enabled.
+Rerun the latest Debian installer to configure automatic HTTPS:
 
-For temporary protected access, run `ssh -L 8080:127.0.0.1:8080 root@<LXC-IP>` from your workstation and open `http://127.0.0.1:8080` there. The network hop is encrypted by SSH. Do not enable Secure cookies for this HTTP tunnel workflow.
+```sh
+sudo bash scripts/install-debian13.sh
+# For a multi-interface server, explicitly choose an assigned IPv4 address:
+sudo bash scripts/install-debian13.sh --https-ip 192.168.1.50
+```
 
-For regular HTTPS access:
+The installer installs Nginx, OpenSSL, and iproute2; detects the source IPv4 address of the default route; and generates a self-signed RSA certificate with that IP in its Subject Alternative Name. Open **`https://<LXC-IP>/`**, without `:8080`. HTTP port 80 redirects to HTTPS. Allow ports 443 and optionally 80 through your existing firewall. No firewall rules are changed automatically.
 
-1. Install Nginx on the LXC or Docker host (`apt install nginx`). Obtain a trusted certificate and matching private key for your chosen hostname.
-2. Copy `deploy/nginx-vsm-toolbox.conf` into `/etc/nginx/sites-available/vsm-toolbox`. Replace every `vsm.example.com` occurrence and both certificate paths. Enable it with a symlink in `/etc/nginx/sites-enabled/`.
-3. For LXC, set `VSM_COOKIE_SECURE=1` in `/etc/default/vsm-toolbox` and run `systemctl restart vsm-toolbox`. For Compose, set `VSM_COOKIE_SECURE=1` before recreating the container; retain the existing loopback-only port publication.
-4. Run `nginx -t`, then reload Nginx. Allow HTTPS access at your network boundary while keeping backend port 8080 inaccessible remotely. Verify sign-in through HTTPS before removing any previous access route.
+Browsers show a warning until you trust the self-signed certificate. Verify its SHA-256 fingerprint through a trusted channel before accepting it or installing it in your device's certificate store:
 
-The supplied proxy template includes TLS 1.2/1.3, HTTP-to-HTTPS redirection, HSTS, connection/rate limits, and request timeouts. Certificate issuance and a deployed proxy cannot be configured automatically without your hostname and certificates. If the proxy runs on another machine, restrict backend access to that proxy and protect the backend network transport too; do not expose an unrestricted HTTP listener.
+```sh
+sudo openssl x509 -in /etc/vsm-toolbox/tls/certificate.pem -noout -fingerprint -sha256
+```
+
+The public certificate is `/etc/vsm-toolbox/tls/certificate.pem`; the private key is root-only at `/etc/vsm-toolbox/tls/private-key.pem`. **Never distribute the private key.** A valid certificate/key matching the current IP is reused on reruns. The installer generates a replacement if the IP changes, the key does not match, or less than 30 days of validity remain. Certificates last 365 days: rerun the installer before expiry and after an IP change, and trust the replacement certificate on clients. Use a static IP or DHCP reservation. This does not install an automatic renewal timer.
+
+The managed Nginx site is `/etc/nginx/conf.d/vsm-toolbox-https.conf`. The systemd drop-in `/etc/systemd/system/vsm-toolbox.service.d/https.conf` loads `/etc/vsm-toolbox/https.env` after the existing environment file, forcing `VSM_HOST=127.0.0.1`, `VSM_PORT=8080`, and `VSM_COOKIE_SECURE=1`. Other existing environment settings, including tokens, remain intact. Direct remote HTTP access to port 8080 is intentionally disabled. Both services are enabled at boot. UI application updates cannot configure HTTPS; rerunning the installer is required once.
+
+The installer backs up the managed files before activation, runs `nginx -t`, checks backend health, verifies HTTPS with the generated certificate as its trust anchor, and checks the redirect. On failure it restores previous managed files and application/service activation. Other Nginx sites are retained; an unmanaged file occupying the managed site path is rejected. Existing servers on ports 80/443 may require resolving their listener conflict. Debian package installations remain installed after a failed application setup.
+
+For a publicly or internally trusted certificate instead, the separate `deploy/nginx-vsm-toolbox.conf` remains an example for manually managed hostname-based TLS. Avoid rerunning the automatic self-signed setup over a manual proxy deployment without reviewing its managed site and certificate paths. For Docker, keep Compose's loopback-only port publication and configure the proxy on the host using that example; automatic self-signed provisioning here targets Debian LXC.
 
 The application caps HTTP workers at 32, idle socket waits at 15 seconds, and each backend connection at 120 seconds, including uploads and downloads. Large transfers must complete within that deadline. Login failures use an ASCII-case-insensitive account/source key (ten failures per five-minute window). A broader source failure counter returns 429 for further failed guesses after 100 failures, while valid unrelated accounts can still sign in. Failed attempts continue to count toward their own account limit even when the broader counter is exhausted. Expired records are removed and storage is capped at 10,000 entries. No forwarded client-IP header is trusted; configure additional abuse controls at your trusted proxy.
