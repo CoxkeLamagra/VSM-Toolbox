@@ -106,30 +106,33 @@ def initialize():
                 f'CREATE TABLE IF NOT EXISTS {entity}_tags (entity_id INTEGER NOT NULL REFERENCES {entity}(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(entity_id,tag_id))'
             )
 
-        # Existing workspaces gain an optional customer request without losing data.
-        if 'voc' not in {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}:
-            conn.execute("ALTER TABLE streams ADD COLUMN voc TEXT NOT NULL DEFAULT ''")
-        if 'bpmn_xml' not in {row['name'] for row in conn.execute('PRAGMA table_info(processes)')}:
-            conn.execute("ALTER TABLE processes ADD COLUMN bpmn_xml TEXT NOT NULL DEFAULT ''")
-        for table in ('streams', 'steps'):
-            columns = {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}
-            for rating in ('cva', 'bva'):
-                if rating not in columns:
-                    conn.execute(
-                        f"ALTER TABLE {table} ADD COLUMN {rating} INTEGER CHECK({rating} IS NULL OR (typeof({rating})='integer' AND {rating} BETWEEN 1 AND 3))"
-                    )
-        stream_columns = {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}
-        for name in ('takt_available_minutes', 'takt_demand'):
-            if name not in stream_columns:
-                conn.execute(
-                    f'ALTER TABLE streams ADD COLUMN {name} REAL CHECK({name} IS NULL OR {name}>0)'
-                )
-        if 'takt_period' not in stream_columns:
-            conn.execute(
-                "ALTER TABLE streams ADD COLUMN takt_period TEXT NOT NULL DEFAULT 'day' CHECK(takt_period IN ('shift','day','week','month'))"
-            )
+        migrate_optional_fields(conn)
         migrate_environments(conn)
         initialize_environment_guards(conn)
+
+
+def migrate_optional_fields(conn):
+    """Add feature columns to existing/restored databases without rebuilding data."""
+    columns = {
+        'streams': {
+            'voc': "TEXT NOT NULL DEFAULT ''",
+            'cva': "INTEGER CHECK(cva IS NULL OR (typeof(cva)='integer' AND cva BETWEEN 1 AND 3))",
+            'bva': "INTEGER CHECK(bva IS NULL OR (typeof(bva)='integer' AND bva BETWEEN 1 AND 3))",
+            'takt_available_minutes': 'REAL CHECK(takt_available_minutes IS NULL OR takt_available_minutes>0)',
+            'takt_demand': 'REAL CHECK(takt_demand IS NULL OR takt_demand>0)',
+            'takt_period': "TEXT NOT NULL DEFAULT 'day' CHECK(takt_period IN ('shift','day','week','month'))",
+        },
+        'steps': {
+            'cva': "INTEGER CHECK(cva IS NULL OR (typeof(cva)='integer' AND cva BETWEEN 1 AND 3))",
+            'bva': "INTEGER CHECK(bva IS NULL OR (typeof(bva)='integer' AND bva BETWEEN 1 AND 3))",
+        },
+        'processes': {'bpmn_xml': "TEXT NOT NULL DEFAULT ''"},
+    }
+    for table, definitions in columns.items():
+        existing = {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}
+        for name, definition in definitions.items():
+            if name not in existing:
+                conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
 
 
 def migrate_environments(conn):
@@ -333,6 +336,8 @@ class ResourceSpec:
     write_roles: tuple[str, ...] = ('Admin', 'Editor')
     tagged: bool = False
     order_by: str = 'id'
+    nullable: tuple[str, ...] = ()
+    text_limits: tuple[tuple[str, int], ...] = ()
 
 
 PCF_TYPES = ('Category', 'Process Group', 'Process', 'Activity', 'Task')
@@ -347,9 +352,12 @@ RESOURCES = {
             'number': int,
             'reference': str,
             'description': str,
-        }
+        },
+        nullable=('parent_id',),
     ),
-    'tags': ResourceSpec({'name': str, 'color': str, 'category_id': int}, ('Admin',)),
+    'tags': ResourceSpec(
+        {'name': str, 'color': str, 'category_id': int}, ('Admin',), nullable=('category_id',)
+    ),
     'tag_categories': ResourceSpec({'name': str}, ('Admin',)),
     'streams': ResourceSpec(
         {
@@ -365,6 +373,7 @@ RESOURCES = {
             'bva': int,
         },
         tagged=True,
+        nullable=('cva', 'bva', 'takt_available_minutes', 'takt_demand'),
     ),
     'steps': ResourceSpec(
         {
@@ -379,10 +388,12 @@ RESOURCES = {
         },
         tagged=True,
         order_by='position, id',
+        nullable=('cva', 'bva'),
     ),
     'processes': ResourceSpec(
         {'name': str, 'owner': str, 'description': str, 'procedure': str, 'bpmn_xml': str},
         tagged=True,
+        text_limits=(('bpmn_xml', 262144),),
     ),
 }
 
@@ -697,19 +708,14 @@ class ContentRepository:
             'name' not in values or table == 'steps' and 'stream_id' not in values
         ):
             raise ValueError('name and, for steps, stream_id are required')
+        text_limits = dict(spec.text_limits)
         for key, value in values.items():
+            if value is None and key in spec.nullable:
+                continue
             kind = spec.fields[key]
-            if key in ('cva', 'bva', 'takt_available_minutes', 'takt_demand') and value is None:
-                continue
-            if kind is str and (
-                not isinstance(value, str) or len(value) > (262144 if key == 'bpmn_xml' else 20000)
-            ):
-                raise ValueError(key + ' must be text of at most 20000 characters')
-            if (
-                (table == 'tags' and key == 'category_id')
-                or (table == 'pcf_entries' and key == 'parent_id')
-            ) and value is None:
-                continue
+            limit = text_limits.get(key, 20000)
+            if kind is str and (not isinstance(value, str) or len(value) > limit):
+                raise ValueError(f'{key} must be text of at most {limit} characters')
             if kind is int and type(value) is not int:
                 raise ValueError(key + ' must be an integer')
             if kind is float and (

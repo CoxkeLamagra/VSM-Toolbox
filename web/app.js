@@ -123,10 +123,35 @@ async function refresh() {
   await VIEWS[view].load?.();
   render();
 }
-const steps = (id) =>
-  state.steps
-    .filter((s) => s.stream_id === id)
-    .sort((a, b) => a.position - b.position || a.id - b.id);
+function buildWorkspaceIndex(data) {
+  const group = (items, key) => {
+    const groups = new Map();
+    for (const item of items || []) {
+      if (!groups.has(item[key])) groups.set(item[key], []);
+      groups.get(item[key]).push(item);
+    }
+    return groups;
+  };
+  const stepsByStream = group(data?.steps, 'stream_id');
+  for (const items of stepsByStream.values())
+    items.sort((a, b) => a.position - b.position || a.id - b.id);
+  return {
+    stepsByStream,
+    linksByStep: group(data?.step_processes, 'step_id'),
+    linksByProcess: group(data?.step_processes, 'process_id'),
+    processes: new Map((data?.processes || []).map((process) => [process.id, process])),
+    tags: new Map((data?.tags || []).map((tag) => [tag.id, tag])),
+  };
+}
+let indexedWorkspace, workspaceIndex;
+function getWorkspaceIndex() {
+  if (!workspaceIndex || indexedWorkspace !== state) {
+    indexedWorkspace = state;
+    workspaceIndex = buildWorkspaceIndex(state);
+  }
+  return workspaceIndex;
+}
+const steps = (id) => [...(getWorkspaceIndex().stepsByStream.get(id) || [])];
 const duration = (n) => `${Number(n.toFixed(1))} min`;
 // One registry owns page access, optional loading, rendering, and navigation.
 const VIEWS = {
@@ -419,12 +444,13 @@ function renderStream() {
           ? items
               .map(
                 (s, i) =>
-                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${valueRatingBadges(s)}${tagBadges(s)}<div class="timing"><div>Cycle time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div><div>Lead time<b>${duration(s.work_minutes + s.wait_minutes)}</b></div></div>${state.step_processes
-                    .filter((l) => l.step_id === s.id)
+                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${valueRatingBadges(s)}${tagBadges(s)}<div class="timing"><div>Cycle time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div><div>Lead time<b>${duration(s.work_minutes + s.wait_minutes)}</b></div></div>${(
+                    getWorkspaceIndex().linksByStep.get(s.id) || []
+                  )
                     .map(
                       (l) => /* HTML */ `
                         <div class="linked">
-                          ☷ ${esc(state.processes.find((p) => p.id === l.process_id)?.name)}
+                          ☷ ${esc(getWorkspaceIndex().processes.get(l.process_id)?.name)}
                         </div>
                       `,
                     )
@@ -547,14 +573,9 @@ function bpmnTextLines(text, width, maxLines, measure) {
   }
   return lines;
 }
-function bpmnMarkup(process) {
-  if (!process?.bpmn) return '';
-  const { nodes, edges, omitted_flows } = process.bpmn;
-  const context = document.createElement('canvas').getContext('2d');
-  context.font = '12px sans-serif';
-  const measure = (text) => context.measureText(text).width;
+function bpmnRoutes(nodes, edges) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const routes = edges.map((edge) => {
+  return edges.map((edge) => {
     if (edge.waypoints.length) return edge.waypoints;
     const a = byId.get(edge.source),
       b = byId.get(edge.target);
@@ -569,6 +590,8 @@ function bpmnMarkup(process) {
       { x: end.x - dx / to, y: end.y - dy / to },
     ];
   });
+}
+function bpmnLabelLayout(nodes, routes, measure) {
   const segments = routes.flatMap((points) =>
     points.slice(1).map((end, index) => ({ start: points[index], end })),
   );
@@ -618,6 +641,16 @@ function bpmnMarkup(process) {
     const x = boxPosition.x + boxPosition.width / 2;
     return `<text class="bpmn-external-label" x="${x}" y="${boxPosition.y + 14}" text-anchor="middle"><title>${esc(text)}</title>${lines.map((line, index) => `<tspan x="${x}" dy="${index ? 16 : 0}">${esc(line)}</tspan>`).join('')}</text>`;
   };
+  return { labels, place };
+}
+function bpmnMarkup(process) {
+  if (!process?.bpmn) return '';
+  const { nodes, edges, omitted_flows } = process.bpmn;
+  const context = document.createElement('canvas').getContext('2d');
+  context.font = '12px sans-serif';
+  const measure = (text) => context.measureText(text).width;
+  const routes = bpmnRoutes(nodes, edges);
+  const { labels, place } = bpmnLabelLayout(nodes, routes, measure);
   const externalLabels = [];
   const shapes = nodes
     .map((node) => {
@@ -720,8 +753,7 @@ function renderProcesses() {
                     <div class="card-head">
                       <span class="icon">☷</span>
                       <span class="pill">
-                        ${state.step_processes.filter((l) => l.process_id === p.id).length} linked
-                        steps
+                        ${(getWorkspaceIndex().linksByProcess.get(p.id) || []).length} linked steps
                       </span>
                     </div>
                     <div>
@@ -811,8 +843,10 @@ function modal(title, html, save, readOnly = false) {
   $('#editor').showModal();
 }
 function assignedTags(entity) {
-  return (state.tags || [])
-    .filter((t) => (entity.tag_ids || []).includes(t.id))
+  const catalog = getWorkspaceIndex().tags;
+  return (entity.tag_ids || [])
+    .map((id) => catalog.get(id))
+    .filter(Boolean)
     .sort(
       (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.id - b.id,
     );
@@ -1462,18 +1496,45 @@ function valueRatingBadges(item) {
 function taktTimeFields(stream) {
   return `<fieldset class="value-ratings"><legend>Takt time — customer demand</legend><p class="hint">Use the same period for both inputs. Net available working time excludes breaks and planned downtime; demand is the number of customer requests to deliver in that period.</p>${field('takt_available_minutes', 'Net available working time (minutes per period)', stream.takt_available_minutes, 'number', true)}${field('takt_demand', 'Customer demand (requests per period)', stream.takt_demand, 'number', true)}<label>Demand period<select name="takt_period" aria-label="Demand period">${['shift', 'day', 'week', 'month'].map((period) => `<option value="${period}" ${period === (stream.takt_period || 'day') ? 'selected' : ''}>${period}</option>`).join('')}</select></label><p class="hint">Takt time = net available working time ÷ customer demand. Leave either input blank to keep it unset.</p></fieldset>`;
 }
+function formSection(title, fields) {
+  return `<fieldset class="form-section"><legend>${esc(title)}</legend>${fields}</fieldset>`;
+}
+function stepFields(step) {
+  const summary = serviceTimeMetrics([step]);
+  return (
+    formSection(
+      'Step details',
+      field('name', 'Step name', step.name) +
+        field('owner', 'Responsible team / owner', step.owner),
+    ) +
+    formSection(
+      'Service timing',
+      field('work_minutes', 'Active work time (minutes)', step.work_minutes, 'number') +
+        field('wait_minutes', 'Waiting time (minutes)', step.wait_minutes, 'number') +
+        `<p id="stepTimePreview" class="hint" aria-live="polite">Cycle time (active work): ${duration(summary.cycle)} · Lead time (work + wait): ${duration(summary.lead)}</p>`,
+    ) +
+    valueRatingPicker(step) +
+    tagPicker(step)
+  );
+}
 function editStream(id) {
   const s = state.streams.find((s) => s.id === id) || {};
   modal(
     id ? 'Edit value stream' : 'Create value stream',
-    field('name', 'Stream name', s.name) +
+    formSection(
+      'Stream details',
+      field('name', 'Stream name', s.name) +
+        field('customer', 'Customer / beneficiary', s.customer) +
+        field('outcome', 'Desired value', s.outcome) +
+        field('description', 'Description', s.description, 'textarea'),
+    ) +
       valueRatingPicker(s) +
       taktTimeFields(s) +
-      field('customer', 'Customer / beneficiary', s.customer) +
-      field('outcome', 'Desired value', s.outcome) +
-      field('description', 'Description', s.description, 'textarea') +
-      field('voc', 'Voice of the Customer (VOC)', s.voc, 'textarea') +
-      '<p class="hint">What is the customer actually asking us to deliver? Use their own words where possible, for example: “Give every new starter working access to their tools on day one.”</p>' +
+      formSection(
+        'Voice of the Customer',
+        field('voc', 'Voice of the Customer (VOC)', s.voc, 'textarea') +
+          '<p class="hint">What is the customer actually asking us to deliver? Use their own words.</p>',
+      ) +
       tagPicker(s) +
       pcfPicker(s),
     async (data) => {
@@ -1484,25 +1545,15 @@ function editStream(id) {
 }
 function editStep(id) {
   const s = state.steps.find((s) => s.id === id) || { work_minutes: 0, wait_minutes: 0 };
-  modal(
-    id ? 'Edit step' : 'Add delivery step',
-    field('name', 'Step name', s.name) +
-      valueRatingPicker(s) +
-      field('owner', 'Responsible team / owner', s.owner) +
-      field('work_minutes', 'Active work time (minutes)', s.work_minutes, 'number') +
-      field('wait_minutes', 'Waiting time (minutes)', s.wait_minutes, 'number') +
-      '<p id="stepTimePreview" class="hint" aria-live="polite"></p>' +
-      tagPicker(s),
-    async (data) => {
-      data.work_minutes = Number(data.work_minutes);
-      data.wait_minutes = Number(data.wait_minutes);
-      if (!id) {
-        data.stream_id = selected;
-        data.position = Math.max(-1, ...steps(selected).map((s) => s.position)) + 1;
-      }
-      await api('steps' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
-    },
-  );
+  modal(id ? 'Edit step' : 'Add delivery step', stepFields(s), async (data) => {
+    data.work_minutes = Number(data.work_minutes);
+    data.wait_minutes = Number(data.wait_minutes);
+    if (!id) {
+      data.stream_id = selected;
+      data.position = Math.max(-1, ...steps(selected).map((s) => s.position)) + 1;
+    }
+    await api('steps' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
+  });
   const updateTimes = () => {
     const work = Number($('#fields [name="work_minutes"]').value);
     const wait = Number($('#fields [name="wait_minutes"]').value);
@@ -3032,18 +3083,7 @@ class StreamDiagram {
       if (canEdit()) editStep(node.id);
       else {
         const step = state.steps.find((s) => s.id === node.id);
-        modal(
-          'Step details',
-          field('name', 'Step name', step.name) +
-            valueRatingPicker(step) +
-            field('owner', 'Responsible team / owner', step.owner) +
-            field('work_minutes', 'Active work time (minutes)', step.work_minutes) +
-            field('wait_minutes', 'Waiting time (minutes)', step.wait_minutes) +
-            field('cycle_minutes', 'Cycle time (minutes)', step.work_minutes) +
-            field('lead_minutes', 'Lead time (minutes)', step.work_minutes + step.wait_minutes),
-          null,
-          true,
-        );
+        modal('Step details', stepFields(step), null, true);
       }
     }
   }

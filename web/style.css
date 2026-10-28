@@ -142,6 +142,7 @@ body.sidebar-collapsed main {
   border-radius: 5px;
 }
 #content {
+  min-width: 0;
   padding: 38px 40px;
 }
 .eyebrow {
@@ -192,6 +193,7 @@ button.primary {
   margin-bottom: 32px;
 }
 .stat {
+  min-width: 0;
   background: white;
   border: 1px solid #e0e1e7;
   border-radius: 9px;
@@ -223,7 +225,7 @@ h2 {
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr));
   gap: 20px;
 }
 .stream-card,
@@ -293,6 +295,7 @@ h3 {
   margin-top: 22px;
 }
 .detail-actions {
+  flex-wrap: wrap;
   display: flex;
   gap: 8px;
 }
@@ -389,7 +392,8 @@ h3 {
   color: #a74f45;
 }
 dialog {
-  width: 510px;
+  width: 640px;
+  max-height: 92vh;
   max-width: 95vw;
   border: 1px solid #d6d8e2;
   border-radius: 12px;
@@ -433,10 +437,13 @@ textarea {
   resize: vertical;
 }
 .dialog-actions {
+  flex-shrink: 0;
+  border-top: 1px solid #e0e1e7;
+  padding-top: 16px;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 24px;
+  margin-top: 16px;
 }
 .check {
   display: flex;
@@ -1512,4 +1519,86 @@ body.sidebar-collapsed .app-version {
 }
 .timing {
   flex-wrap: wrap;
+}
+
+/* Shared page and form layout for the expanded feature set. */
+.title-row > div,
+.card-meta > span {
+  min-width: 0;
+}
+.title-row h1,
+.stream-card h3,
+.process-card h3,
+.pcf-tile h3 {
+  overflow-wrap: anywhere;
+}
+.service-time-stats {
+  margin-bottom: 12px;
+}
+.stat strong,
+.stat span {
+  overflow-wrap: anywhere;
+}
+#form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 74vh;
+}
+#fields {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px 8px 2px 2px;
+}
+.form-section {
+  min-width: 0;
+  border: 1px solid #e0e1e7;
+  border-radius: 8px;
+  margin: 0 0 18px;
+  padding: 16px;
+}
+.form-section legend,
+.value-ratings legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.form-section > label:last-child,
+.form-section > .hint:last-child {
+  margin-bottom: 0;
+}
+.value-rating-badges .pill {
+  border: 1px solid #e0e1e7;
+  background: #f8fafc;
+}
+@media (max-width: 800px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .card-meta {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .detail-actions > button {
+    white-space: normal;
+  }
+  dialog {
+    padding: 18px;
+  }
+  .form-section {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 800px) {
+  .aside-bottom {
+    display: block;
+    text-align: center;
+  }
+  .footer-details {
+    display: none;
+  }
+  .app-version {
+    font-size: 9px;
+    overflow-wrap: anywhere;
+  }
 }

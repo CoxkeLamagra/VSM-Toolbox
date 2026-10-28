@@ -140,3 +140,9 @@ The HTTPS helper is installer-only and is not part of the six-file web update pa
 Streams gain nullable positive `takt_available_minutes`/`takt_demand` columns and a constrained `takt_period` with default `day`, using additive idempotent migration. The existing resource/environment/role boundary owns validation and writes. Empty form inputs serialize as null; optional numeric fields do not prevent editing existing streams without takt settings. Backup/update delivery contracts remain unchanged.
 
 `serviceTimeMetrics()` derives active processing cycle time, sequential lead time (active plus waiting), takt (matching-period availability divided by demand), and active-work flow efficiency. Step previews, flow cards, and diagram nodes expose processing/lead time without duplicating stored calculated fields. The UI explicitly distinguishes this processing convention from observed completion-interval cycle time and labels sequential totals as mapping estimates.
+
+## Consolidation after service timing and BPMN display changes
+
+The latest review is recorded in `docs/refactor-visual-review-2026-10-28.md`. `migrate_optional_fields()` owns additive feature columns; `ResourceSpec.nullable` and `text_limits` own scalar contract exceptions. Repeated workspace lookups use indexes built from each refreshed API snapshot. BPMN route construction and collision placement are separate from the screen renderer. Shared stream/step fieldsets and a scrollable modal body keep long forms usable at desktop/mobile widths without changing submitted fields or Viewer restrictions.
+
+`tests/visual-review.cjs` captures the full main-screen set and checks horizontal containment using disposable data and the actual supervisor. Runtime delivery, API paths, backup format, role separation, and stored schema values remain compatible.

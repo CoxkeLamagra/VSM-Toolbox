@@ -178,3 +178,38 @@ assert.deepEqual(
 console.log(
   'Service timing checks passed: active cycle, elapsed lead, takt, empty streams, and optional inputs.',
 );
+
+const workspace = vm.createContext({});
+vm.runInContext(
+  source.slice(
+    source.indexOf('function buildWorkspaceIndex('),
+    source.indexOf('let indexedWorkspace'),
+  ),
+  workspace,
+);
+const input = {
+  steps: [
+    { id: 2, stream_id: 1, position: 1 },
+    { id: 1, stream_id: 1, position: 0 },
+  ],
+  step_processes: [{ step_id: 1, process_id: 7 }],
+  processes: [{ id: 7, name: 'Support' }],
+  tags: [{ id: 9, name: 'Critical' }],
+};
+const indexed = workspace.buildWorkspaceIndex(input);
+assert.deepEqual(
+  Array.from(indexed.stepsByStream.get(1), (step) => step.id),
+  [1, 2],
+);
+assert.deepEqual(
+  input.steps.map((step) => step.id),
+  [2, 1],
+  'Indexing must not reorder the API snapshot',
+);
+assert.equal(indexed.linksByStep.get(1).length, 1);
+assert.equal(indexed.linksByProcess.get(7).length, 1);
+assert.equal(indexed.tags.get(9).name, 'Critical');
+assert.equal(workspace.buildWorkspaceIndex(null).stepsByStream.size, 0);
+console.log(
+  'Workspace indexing checks passed: ordering, links, catalogs, empty state, and unchanged snapshots.',
+);
