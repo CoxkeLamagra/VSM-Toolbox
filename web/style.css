@@ -1477,3 +1477,14 @@ body.sidebar-collapsed .app-version {
   font-size: 9px;
   overflow-wrap: anywhere;
 }
+
+.bpmn-canvas .bpmn-external-label {
+  paint-order: stroke;
+  stroke: #f8fafc;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.bpmn-canvas .bpmn-gateway-marker {
+  font-size: 20px;
+  font-weight: 600;
+}

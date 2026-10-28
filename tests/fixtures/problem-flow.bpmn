@@ -1,0 +1,57 @@
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI"><process id="problem" name="Problem management">
+<startEvent id="start" name="Problem reported"/>
+<task id="register" name="Register Problem"/>
+<task id="prioritize" name="Prioritize Problem"/>
+<task id="rca" name="Perform RCA"/>
+<exclusiveGateway id="cause" name="Root cause found?"/>
+<task id="define" name="Define solution"/>
+<exclusiveGateway id="solution" name="Solution found?"/>
+<task id="implement" name="Implement Solution"/>
+<exclusiveGateway id="solved" name="Problem solved?"/>
+<task id="close" name="Close Problem"/>
+<endEvent id="end" name="Problem Closed"/>
+<task id="known" name="Document as Known Error"/>
+<endEvent id="knownEnd" name="Known Error documented"/>
+<sequenceFlow id="f0" sourceRef="start" targetRef="register" name=""/>
+<sequenceFlow id="f1" sourceRef="register" targetRef="prioritize" name=""/>
+<sequenceFlow id="f2" sourceRef="prioritize" targetRef="rca" name=""/>
+<sequenceFlow id="f3" sourceRef="rca" targetRef="cause" name=""/>
+<sequenceFlow id="f4" sourceRef="cause" targetRef="define" name="Yes"/>
+<sequenceFlow id="f5" sourceRef="define" targetRef="solution" name=""/>
+<sequenceFlow id="f6" sourceRef="solution" targetRef="implement" name="Yes"/>
+<sequenceFlow id="f7" sourceRef="implement" targetRef="solved" name=""/>
+<sequenceFlow id="f8" sourceRef="solved" targetRef="close" name="Yes"/>
+<sequenceFlow id="f9" sourceRef="close" targetRef="end" name=""/>
+<sequenceFlow id="f10" sourceRef="cause" targetRef="known" name="No"/>
+<sequenceFlow id="f11" sourceRef="solution" targetRef="known" name="No"/>
+<sequenceFlow id="f12" sourceRef="solved" targetRef="known" name="No"/>
+<sequenceFlow id="f13" sourceRef="known" targetRef="knownEnd" name=""/>
+</process><bpmndi:BPMNDiagram><bpmndi:BPMNPlane>
+<bpmndi:BPMNShape bpmnElement="start"><dc:Bounds x="20" y="70" width="36" height="36"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="register"><dc:Bounds x="100" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="prioritize"><dc:Bounds x="260" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="rca"><dc:Bounds x="420" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="cause"><dc:Bounds x="585" y="63" width="50" height="50"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="define"><dc:Bounds x="700" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="solution"><dc:Bounds x="895" y="63" width="50" height="50"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="implement"><dc:Bounds x="1010" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="solved"><dc:Bounds x="1175" y="63" width="50" height="50"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="close"><dc:Bounds x="1290" y="48" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="end"><dc:Bounds x="1460" y="70" width="36" height="36"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="known"><dc:Bounds x="1150" y="220" width="100" height="80"/></bpmndi:BPMNShape>
+<bpmndi:BPMNShape bpmnElement="knownEnd"><dc:Bounds x="1460" y="242" width="36" height="36"/></bpmndi:BPMNShape>
+<bpmndi:BPMNEdge bpmnElement="f0"><di:waypoint x="56" y="88.0"/><di:waypoint x="100" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f1"><di:waypoint x="200" y="88.0"/><di:waypoint x="260" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f2"><di:waypoint x="360" y="88.0"/><di:waypoint x="420" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f3"><di:waypoint x="520" y="88.0"/><di:waypoint x="585" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f4"><di:waypoint x="635" y="88.0"/><di:waypoint x="700" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f5"><di:waypoint x="800" y="88.0"/><di:waypoint x="895" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f6"><di:waypoint x="945" y="88.0"/><di:waypoint x="1010" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f7"><di:waypoint x="1110" y="88.0"/><di:waypoint x="1175" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f8"><di:waypoint x="1225" y="88.0"/><di:waypoint x="1290" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f9"><di:waypoint x="1390" y="88.0"/><di:waypoint x="1460" y="88.0"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f10"><di:waypoint x="610.0" y="113"/><di:waypoint x="610.0" y="260"/><di:waypoint x="1150" y="260"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f11"><di:waypoint x="920.0" y="113"/><di:waypoint x="920.0" y="260"/><di:waypoint x="1150" y="260"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f12"><di:waypoint x="1200" y="113"/><di:waypoint x="1200" y="220"/></bpmndi:BPMNEdge>
+<bpmndi:BPMNEdge bpmnElement="f13"><di:waypoint x="1250" y="260.0"/><di:waypoint x="1460" y="260.0"/></bpmndi:BPMNEdge>
+</bpmndi:BPMNPlane></bpmndi:BPMNDiagram></definitions>

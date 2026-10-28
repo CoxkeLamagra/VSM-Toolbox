@@ -67,6 +67,50 @@ const { spawn } = require('node:child_process');
     await page.locator('#error').filter({ hasText: 'Invalid BPMN XML' }).waitFor();
     assert.equal(await page.locator('.bpmn-node').count(), 4);
     await page.locator('#editor').evaluate((dialog) => dialog.close());
+    await page.getByRole('button', { name: 'Replace BPMN XML', exact: true }).click();
+    await page.locator('#bpmnFile').setInputFiles('tests/fixtures/problem-flow.bpmn');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await page.locator('.bpmn-node').nth(12).waitFor();
+    const collisions = await page.evaluate(() => {
+      const svg = document.querySelector('#bpmnCanvas svg');
+      const intersects = (a, b) =>
+        a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+      const shapes = [
+        ...svg.querySelectorAll('.bpmn-node > rect, .bpmn-node > ellipse, .bpmn-node > polygon'),
+      ].map((shape) => shape.getBBox());
+      const external = [...svg.querySelectorAll('.bpmn-external-label')];
+      const failures = external
+        .filter((text) => shapes.some((shape) => intersects(text.getBBox(), shape)))
+        .map((text) => text.textContent);
+      for (const text of svg.querySelectorAll('.bpmn-task-label')) {
+        const box = text.getBBox(),
+          shape = text.parentElement.querySelector('rect').getBBox();
+        if (
+          box.x < shape.x ||
+          box.y < shape.y ||
+          box.x + box.width > shape.x + shape.width ||
+          box.y + box.height > shape.y + shape.height
+        )
+          failures.push(text.textContent);
+      }
+      const view = svg.viewBox.baseVal;
+      if (
+        external.some((text) => {
+          const box = text.getBBox();
+          return (
+            box.x < view.x ||
+            box.y < view.y ||
+            box.x + box.width > view.x + view.width ||
+            box.y + box.height > view.y + view.height
+          );
+        })
+      )
+        failures.push('clipped labels');
+      return failures;
+    });
+    assert.deepEqual(collisions, [], 'BPMN labels must fit their tasks or avoid all node shapes');
+    assert.equal(await page.locator('.bpmn-gateway-marker').count(), 3);
+    await page.locator('.bpmn-panel').screenshot({ path: '/tmp/vsm-bpmn-label-layout.png' });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     assert.deepEqual(errors, []);

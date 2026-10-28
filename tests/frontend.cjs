@@ -118,3 +118,31 @@ assert.equal(access.canAccessView('unknown'), false);
 console.log(
   'Page access checks passed: signed out, no environment, application and environment roles.',
 );
+
+const bpmnText = vm.createContext({});
+vm.runInContext(
+  source.slice(source.indexOf('function bpmnTextLines('), source.indexOf('function bpmnMarkup(')),
+  bpmnText,
+);
+for (const name of [
+  'Register Problem',
+  'Document as Known Error',
+  'AReallyLongUnbrokenTaskName',
+  '审批服务请求',
+]) {
+  const lines = bpmnText.bpmnTextLines(name, 80, 3, (value) => Array.from(value).length * 7);
+  assert.ok(lines.length <= 3);
+  assert.ok(lines.every((line) => Array.from(line).length * 7 <= 80));
+}
+assert.deepEqual(
+  Array.from(
+    bpmnText.bpmnTextLines(
+      'A long task title that must be truncated',
+      40,
+      1,
+      (value) => value.length * 7,
+    ),
+  ),
+  ['A…'],
+);
+console.log('BPMN wrapping checks passed: box widths, long words, Unicode, and truncation.');

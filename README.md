@@ -400,6 +400,8 @@ Tests: the Python suite covers populated legacy migration, scope boundaries, cro
 
 In **Process library**, select **Import BPMN XML** to create a process from a local `.bpmn` or `.xml` file. Existing process cards also provide an import/replace button; replacement preserves their value-stream links, tags, and documentation. Use **View BPMN diagram** to inspect the saved diagram, adjust zoom, and scroll or drag to pan. Environment Admins and Editors can import; Viewers can inspect saved diagrams.
 
+Task labels wrap to the measured box width; gateway/event names sit outside their shapes, and flow labels are placed beside routed segments with collision checks. Long labels show an ellipsis when necessary, with their full text available on hover. Diagram bounds include external labels so they are not clipped.
+
 The local viewer supports BPMN 2.0 tasks, events, gateways, subprocess nodes, sequence flows, and message flows. It preserves available BPMN DI node positions and flow waypoints; missing node positions use a basic grid layout. Pools, lanes, extension graphics, and event-specific symbols are not drawn, and nested subprocess contents appear together. Files are limited to 256 KiB, 500 supported nodes, and 2,000 flows. DTDs and entity declarations are rejected. Imported XML is stored in the environment's local database and included in backups; it is never executed as a workflow.
 
 
