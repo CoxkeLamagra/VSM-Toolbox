@@ -13,6 +13,8 @@ import re
 import secrets
 import shutil
 import sqlite3
+import socket
+import threading
 import tempfile
 import time
 import uuid
@@ -1245,6 +1247,46 @@ class EnvironmentRepository:
         return {'updated': ident}
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """Bound worker count, idle reads, and total connection lifetime."""
+
+    max_workers = 32
+    idle_timeout = 15
+    request_deadline = 120
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.workers = threading.BoundedSemaphore(self.max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self.workers.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            request.settimeout(self.idle_timeout)
+            super().process_request(request, client_address)
+        except BaseException:
+            self.workers.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        def expire():
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        deadline = threading.Timer(self.request_deadline, expire)
+        deadline.daemon = True
+        try:
+            deadline.start()
+            super().process_request_thread(request, client_address)
+        finally:
+            deadline.cancel()
+            self.workers.release()
+
+
 class Handler(BaseHTTPRequestHandler):
     def environment_repository(self, conn, user):
         token_hash = hashlib.sha256(self.session_token().encode()).hexdigest()
@@ -1397,7 +1439,13 @@ class Handler(BaseHTTPRequestHandler):
             if len(data['username']) > 64 or len(data['password']) > 128:
                 raise ValueError('Invalid credentials')
             now = time.time()
-            address = self.client_address[0]
+            # SQLite NOCASE folds ASCII only; account names are ASCII on creation.
+            username = data['username'].translate(
+                str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
+            )
+            source = self.client_address[0]
+            address = 'account:' + hashlib.sha256((source + '\0' + username).encode()).hexdigest()
+            source_key = 'source:' + hashlib.sha256(source.encode()).hexdigest()
             conn.execute('DELETE FROM login_attempts WHERE started_at<=?', (now - 300,))
             attempt = conn.execute(
                 'SELECT failures FROM login_attempts WHERE address=?', (address,)
@@ -1419,10 +1467,28 @@ class Handler(BaseHTTPRequestHandler):
             )
             valid = password_matches(data['password'], stored)
             if not user or not valid:
+                # The broad budget suppresses failed guesses, never valid logins
+                # for unrelated accounts sharing a proxy. Keep both budgets bounded.
+                source_attempt = conn.execute(
+                    'SELECT failures FROM login_attempts WHERE address=?', (source_key,)
+                ).fetchone()
+                conn.execute(
+                    'INSERT INTO login_attempts VALUES (?,1,?) ON CONFLICT(address) DO UPDATE SET failures=failures+1',
+                    (source_key, now),
+                )
                 conn.execute(
                     'INSERT INTO login_attempts VALUES (?,1,?) ON CONFLICT(address) DO UPDATE SET failures=failures+1',
                     (address, now),
                 )
+                conn.execute(
+                    'DELETE FROM login_attempts WHERE address IN (SELECT address FROM login_attempts ORDER BY started_at,address LIMIT MAX(0,(SELECT count(*) FROM login_attempts)-10000))'
+                )
+                if source_attempt and source_attempt['failures'] >= 100:
+                    return (
+                        429,
+                        {'error': 'Too many failed sign-in attempts. Try again in five minutes.'},
+                        None,
+                    )
                 return 401, {'error': 'Invalid username or password'}, None
             conn.execute('DELETE FROM login_attempts WHERE address=?', (address,))
             result, cookie = self.create_session(conn, user)
@@ -1865,4 +1931,4 @@ if __name__ == '__main__':
     host = os.environ.get('VSM_HOST', '127.0.0.1')
     port = int(os.environ.get('VSM_PORT', '8080'))
     print(f'VSM Toolbox listening on {host}:{port}', flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    BoundedHTTPServer((host, port), Handler).serve_forever()

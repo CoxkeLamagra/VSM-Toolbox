@@ -83,7 +83,7 @@ The installer refuses to overwrite an existing `/opt/vsm-toolbox` installation t
 
 The installer starts the unprivileged update supervisor, which manages the web process.
 
-Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds on all container interfaces; it does not modify your firewall or install a reverse proxy. No privileged LXC features or Docker nesting are needed.
+Diagnose startup with `systemctl status vsm-toolbox` and `journalctl -u vsm-toolbox`. The installer uses port 8080 and binds to loopback by default; it does not modify your firewall or install a reverse proxy. Use an HTTPS proxy or SSH tunnel for remote access. No privileged LXC features or Docker nesting are needed.
 
 ## Automatic startup after reboot
 
@@ -401,3 +401,21 @@ Tests: the Python suite covers populated legacy migration, scope boundaries, cro
 In **Process library**, select **Import BPMN XML** to create a process from a local `.bpmn` or `.xml` file. Existing process cards also provide an import/replace button; replacement preserves their value-stream links, tags, and documentation. Use **View BPMN diagram** to inspect the saved diagram, adjust zoom, and scroll or drag to pan. Environment Admins and Editors can import; Viewers can inspect saved diagrams.
 
 The local viewer supports BPMN 2.0 tasks, events, gateways, subprocess nodes, sequence flows, and message flows. It preserves available BPMN DI node positions and flow waypoints; missing node positions use a basic grid layout. Pools, lanes, extension graphics, and event-specific symbols are not drawn, and nested subprocess contents appear together. Files are limited to 256 KiB, 500 supported nodes, and 2,000 flows. DTDs and entity declarations are rejected. Imported XML is stored in the environment's local database and included in backups; it is never executed as a workflow.
+
+
+### Protected deployment after the security fixes
+
+The Debian service now defaults to `VSM_HOST=127.0.0.1`. Existing `/etc/default/vsm-toolbox` overrides still take precedence: remove an old `VSM_HOST=0.0.0.0` override if the proxy is on the same machine. UI application updates cannot replace your systemd unit or proxy settings; rerun the Debian installer (or update the service configuration and restart) to apply the loopback default. Boot startup remains enabled.
+
+For temporary protected access, run `ssh -L 8080:127.0.0.1:8080 root@<LXC-IP>` from your workstation and open `http://127.0.0.1:8080` there. The network hop is encrypted by SSH. Do not enable Secure cookies for this HTTP tunnel workflow.
+
+For regular HTTPS access:
+
+1. Install Nginx on the LXC or Docker host (`apt install nginx`). Obtain a trusted certificate and matching private key for your chosen hostname.
+2. Copy `deploy/nginx-vsm-toolbox.conf` into `/etc/nginx/sites-available/vsm-toolbox`. Replace every `vsm.example.com` occurrence and both certificate paths. Enable it with a symlink in `/etc/nginx/sites-enabled/`.
+3. For LXC, set `VSM_COOKIE_SECURE=1` in `/etc/default/vsm-toolbox` and run `systemctl restart vsm-toolbox`. For Compose, set `VSM_COOKIE_SECURE=1` before recreating the container; retain the existing loopback-only port publication.
+4. Run `nginx -t`, then reload Nginx. Allow HTTPS access at your network boundary while keeping backend port 8080 inaccessible remotely. Verify sign-in through HTTPS before removing any previous access route.
+
+The supplied proxy template includes TLS 1.2/1.3, HTTP-to-HTTPS redirection, HSTS, connection/rate limits, and request timeouts. Certificate issuance and a deployed proxy cannot be configured automatically without your hostname and certificates. If the proxy runs on another machine, restrict backend access to that proxy and protect the backend network transport too; do not expose an unrestricted HTTP listener.
+
+The application caps HTTP workers at 32, idle socket waits at 15 seconds, and each backend connection at 120 seconds, including uploads and downloads. Large transfers must complete within that deadline. Login failures use an ASCII-case-insensitive account/source key (ten failures per five-minute window). A broader source failure counter returns 429 for further failed guesses after 100 failures, while valid unrelated accounts can still sign in. Failed attempts continue to count toward their own account limit even when the broader counter is exhausted. Expired records are removed and storage is capped at 10,000 entries. No forwarded client-IP header is trusted; configure additional abuse controls at your trusted proxy.

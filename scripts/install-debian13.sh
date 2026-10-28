@@ -25,7 +25,7 @@ Run as root inside a Debian 13 LXC with systemd and Internet access.
 By default fetches main from CoxkeLamagra/VSM-Toolbox over HTTPS.
 --ref selects a branch, tag, or commit; --source-dir installs a local checkout
 instead (mutually exclusive with --ref). Existing database data is preserved.
-Installs on port 8080, accessible on the container's private network.
+Installs on loopback port 8080. Use an HTTPS reverse proxy or SSH tunnel for access.
 HELP
 }
 REF_SET=0
@@ -189,8 +189,9 @@ fi
 curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/session | \
     python3 -c 'import json,sys; data=json.load(sys.stdin); assert "setup_required" in data and "user" in data'
 ACTIVATED=0
-printf '\nVSM Toolbox installed and healthy.\nOpen http://<LXC-IP>:8080 on your trusted private network.\n'
+printf '\nVSM Toolbox installed and healthy.\nBackend: http://127.0.0.1:8080 (loopback only). Configure an HTTPS reverse proxy or SSH tunnel.\n'
 echo "Database: $DATA/vsm.sqlite3"
 echo 'Boot startup: enabled (systemd vsm-toolbox.service)'
 echo 'Logs: journalctl -u vsm-toolbox -f'
-echo 'Create the first Admin account in the browser. Use HTTPS for access beyond a trusted local connection.'
+echo 'For temporary access: ssh -L 8080:127.0.0.1:8080 root@<LXC-IP>, then open http://127.0.0.1:8080 locally.'
+echo 'For HTTPS setup see deploy/nginx-vsm-toolbox.conf and README.md. Create the first Admin through that protected connection.'

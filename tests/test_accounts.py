@@ -103,7 +103,8 @@ class AccountTest(test_api.ApiTest):
         anonymous=self.new_client()
         for _ in range(10):
             self.assertEqual(self.request('POST','/api/auth/login',{'username':'missing','password':'wrong'},client=anonymous)[0],401)
-        self.assertEqual(self.login('admin',anonymous)[0],429)
+        self.assertEqual(self.request('POST','/api/auth/login',{'username':'MISSING','password':'wrong'},client=anonymous)[0],429)
+        self.assertEqual(self.login('admin',anonymous)[0],200)
         with app.connect() as conn:
             conn.execute('UPDATE login_attempts SET started_at=?',(time.time()-301,))
         self.assertEqual(self.login('admin',anonymous)[0],200)
