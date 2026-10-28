@@ -4,7 +4,7 @@ from pathlib import Path
 from .runtime import UPDATE_PROTOCOL
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_VERSION = '1.0.0'
+APP_VERSION = '1.1.0'
 
 
 ROLES = ('Admin', 'Editor', 'Viewer')
