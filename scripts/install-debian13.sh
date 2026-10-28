@@ -128,7 +128,25 @@ else
     git -C "$TEMP/source" checkout -q --detach FETCH_HEAD
     SOURCE=$TEMP/source
 fi
-for file in app.py updater.py update-manifest.json web/index.html web/app.js web/style.css deploy/vsm-toolbox.service scripts/prepare-https.py; do
+# The selected revision must provide the modular delivery profile.
+[[ -f $SOURCE/vsm/runtime.py && ! -L $SOURCE/vsm/runtime.py ]] || {
+    echo 'This installer requires the modular application revision; use its matching installer for older releases.' >&2; exit 1;
+}
+PYTHONDONTWRITEBYTECODE=1 python3 - "$SOURCE" > "$TEMP/runtime-files" <<'PYCODE'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+from vsm.runtime import release_files
+files = release_files(json.loads((root / 'update-manifest.json').read_text()), allow_legacy=False)
+for name in files:
+    path = root / name
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Missing or linked runtime file: ' + name)
+    print(name)
+PYCODE
+mapfile -t RUNTIME_FILES < "$TEMP/runtime-files"
+for file in deploy/vsm-toolbox.service scripts/prepare-https.py; do
     [[ -f $SOURCE/$file && ! -L $SOURCE/$file ]] || { echo "Required source file missing or symlinked: $file" >&2; exit 1; }
 done
 # Select a specific local IPv4 address. Route lookup does not send traffic.
@@ -164,15 +182,15 @@ install -d -m 0755 "$RELEASES"
 touch "$RELEASES/.installer-managed"
 NEW=$(mktemp -d "$RELEASES/release-XXXXXXXX")
 chmod 0755 "$NEW"
-for file in app.py updater.py update-manifest.json; do install -m 0644 "$SOURCE/$file" "$NEW/$file"; done
+for file in "${RUNTIME_FILES[@]}"; do
+    install -D -m 0644 "$SOURCE/$file" "$NEW/$file"
+done
 REVISION=local
-if git -C "$SOURCE" diff --quiet HEAD -- app.py updater.py web update-manifest.json 2>/dev/null && \
-   [[ -z $(git -C "$SOURCE" ls-files --others --exclude-standard -- app.py updater.py web update-manifest.json) ]]; then
+if git -C "$SOURCE" diff --quiet HEAD -- app.py updater.py vsm web update-manifest.json 2>/dev/null && \
+   [[ -z $(git -C "$SOURCE" ls-files --others --exclude-standard -- app.py updater.py vsm web update-manifest.json) ]]; then
     REVISION=$(git -C "$SOURCE" rev-parse HEAD)
 fi
 printf '%s\n' "$REVISION" > "$NEW/REVISION"
-install -d -m 0755 "$NEW/web"
-for file in index.html app.js style.css; do install -m 0644 "$SOURCE/web/$file" "$NEW/web/$file"; done
 install -d -o vsm -g vsm -m 0700 "$DATA"
 # Verify Python/SQLite and creation of a new schema before stopping the live service.
 VSM_DATABASE="$TEMP/check.sqlite3" PYTHONDONTWRITEBYTECODE=1 python3 - "$NEW" <<'PY'

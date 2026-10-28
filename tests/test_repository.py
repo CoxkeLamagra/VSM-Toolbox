@@ -12,7 +12,7 @@ import app
 class RepositoryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.database = mock.patch.object(app, 'DB', Path(self.temp.name) / 'workspace.sqlite3')
+        self.database = mock.patch.object(app.storage, 'DB', Path(self.temp.name) / 'workspace.sqlite3')
         self.database.start()
         app.initialize()
         self.addCleanup(self.temp.cleanup)

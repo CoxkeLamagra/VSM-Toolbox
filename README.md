@@ -65,7 +65,7 @@ curl --fail --show-error --location \
 bash /root/install-vsm-toolbox.sh
 ```
 
-The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. This installer requires a revision containing `updater.py`, `update-manifest.json`, and `scripts/prepare-https.py`; the older `v0.1.0` tag predates this update protocol and requires its original installer instructions. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
+The default downloads `main` from GitHub over verified HTTPS. Use `--ref <tag-or-commit>` to select a reviewed version **that contains the application and service files**. This installer requires a revision containing `updater.py`, `update-manifest.json`, `scripts/prepare-https.py`, and `vsm/runtime.py`; the older `v0.1.0` tag predates this update protocol and requires its original installer instructions. `--source-dir` and `--ref` cannot be combined. Internet access to Debian package mirrors and, unless using local source, GitHub is required. Run `bash scripts/install-debian13.sh --help` for usage.
 
 Open `https://<LXC-IP>/` from your trusted network. The browser warns about the self-signed certificate until you trust it. Installation paths:
 
@@ -186,7 +186,7 @@ Work/wait times must be finite nonnegative numbers in minutes. Flow efficiency i
 
 Open **Administrator → Backups & restore**. Only Admin accounts can list or download backups, create manual backups, upload, restore, or delete backup files. All write actions require the session's CSRF token. Manual backup and restore work offline, without GitHub access.
 
-- **Create manual backup** keeps the web server running and uses SQLite’s online backup API to produce a `.vsm-backup.zip` containing the six application runtime files, the SQLite database (including local accounts), revision metadata, and checksums. Writes pause during capture; reads remain available.
+- **Create manual backup** keeps the web server running and uses SQLite’s online backup API to produce a `.vsm-backup.zip` containing all manifest-declared application runtime files, the SQLite database (including local accounts), revision metadata, and checksums. Writes pause during capture; reads remain available.
 - **Download** saves a server backup to your computer. Keep copies on another system to protect against disk failure.
 - **Restore** beside a saved backup restores that application's code, accounts, and database. The selected archive is validated before the application stops. A full **pre-restore safety backup** captures the current state before any replacement; failed startup restores that safety snapshot.
 - **Upload and restore** accepts a trusted `.vsm-backup.zip` (maximum 128 MiB compressed and unpacked). Archive paths, regular-file types, exact file membership, checksums, Python syntax, runtime compatibility, SQLite integrity/schema and the presence of an Admin account are checked. Arbitrary archive paths and symlinks are never extracted. Invalid uploads are rejected without changing the running workspace.
@@ -457,3 +457,15 @@ Set the optional takt inputs under **Edit details → Takt time — customer dem
 These are estimates from the mapped sequential steps, not timestamp measurements or a working-calendar simulation. Include all relevant waiting in the steps. Parallel work, staffing, request mix, throughput, and bottlenecks require separate analysis; summed processing time alone does not establish delivery capacity. The term cycle time can also mean observed completion intervals in other Lean contexts; this UI labels it **processing** to state its convention clearly.
 
 API stream fields: `takt_available_minutes` and `takt_demand` accept finite positive numbers or `null`; `takt_period` accepts `shift`, `day`, `week`, or `month` (default `day`). Omitted inputs preserve existing values. The calculated cycle/lead values derive from the existing step work/wait times rather than being stored as independent, potentially stale values.
+
+## Modular application transition (delivery protocol 2)
+
+The backend is now split into the `vsm/` package, and the browser loads native ES modules from `web/lib/` and `web/features/`. **This transition requires the matching full installer or a rebuilt Docker image; older UI update engines cannot install it.** They reject its delivery protocol before replacing the active application. Keep an external backup before reinstalling. Use the new installer rather than an older cached script, and hard-refresh the browser after upgrading if it retained old assets.
+
+For Debian LXC, rerun the installer from the modular revision, using the existing data directory. It stages every runtime module, performs schema/health checks, preserves the database, and configures the existing self-signed HTTPS setup. Use `--https-ip` for an explicit assigned address. An older release such as `v1.0.0` must use its own matching installer; the modular installer requires `vsm/runtime.py`.
+
+For Docker, stop the container and retain the data volume/backups. If `updates/active.json` exists in that volume, archive/rename it while stopped to select the new image's bundled code, then rebuild and recreate the container. Do not delete the database or volume. A stored web-update activation intentionally takes precedence over image code.
+
+New backups contain every declared module. The new supervisor also accepts the exact legacy six-file backup profile and can restore it; an older supervisor cannot restore modular backups. After a legacy-code restore, the running new supervisor still owns recovery. Runtime filenames are constrained and bounded; arbitrary archive paths are not extracted. See `docs/architecture.md` for module responsibilities and the delivery contract.
+
+No Python packages, Node service, JavaScript build step, or external database are introduced. `python3 app.py` and `python3 updater.py` remain the entry commands, run from a complete checkout/installation. The backend's database configuration now lives in `vsm.storage`; deployment configuration continues to use `VSM_DATABASE`.

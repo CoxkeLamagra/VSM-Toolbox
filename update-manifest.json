@@ -1,7 +1,30 @@
 {
   "format": 1,
-  "update_protocol": 1,
+  "update_protocol": 2,
   "runtime": "python-stdlib",
   "python_minimum": [3, 11],
-  "files": ["app.py", "updater.py", "web/index.html", "web/app.js", "web/style.css", "update-manifest.json"]
+  "files": [
+    "app.py",
+    "updater.py",
+    "update-manifest.json",
+    "vsm/runtime.py",
+    "vsm/__init__.py",
+    "vsm/auth.py",
+    "vsm/bpmn.py",
+    "vsm/branding.py",
+    "vsm/config.py",
+    "vsm/environments.py",
+    "vsm/http.py",
+    "vsm/pcf.py",
+    "vsm/repository.py",
+    "vsm/resources.py",
+    "vsm/storage.py",
+    "web/app.js",
+    "web/features/bpmn.js",
+    "web/features/stream-diagram.js",
+    "web/index.html",
+    "web/lib/core.js",
+    "web/style.css",
+    "web/features/pcf.js"
+  ]
 }

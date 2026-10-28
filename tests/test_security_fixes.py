@@ -1,6 +1,7 @@
 """Regression tests for shared-IP lockout and bounded HTTP connections."""
 
 import socket
+import hashlib
 import threading
 import time
 import unittest
@@ -45,7 +46,7 @@ class LoginIsolationTest(test_api.ApiTest):
         )
 
     def test_source_budget_does_not_block_unrelated_valid_login(self):
-        source_key = 'source:' + app.hashlib.sha256(b'127.0.0.1').hexdigest()
+        source_key = 'source:' + hashlib.sha256(b'127.0.0.1').hexdigest()
         with app.connect() as conn:
             conn.execute('INSERT INTO login_attempts VALUES (?,100,?)', (source_key, time.time()))
         self.assertEqual(

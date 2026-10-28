@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:frontend": "node tests/frontend.cjs && node tests/maintenance.cjs"
+  }
+}

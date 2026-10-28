@@ -13,8 +13,8 @@ class ApiTest(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.previous_db = app.DB
-        app.DB = Path(self.temp.name) / 'test.sqlite3'
+        self.previous_db = app.storage.DB
+        app.storage.DB = Path(self.temp.name) / 'test.sqlite3'
         app.initialize()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -28,7 +28,7 @@ class ApiTest(unittest.TestCase):
         self.server.server_close()
         self.thread.join()
         self.temp.cleanup()
-        app.DB = self.previous_db
+        app.storage.DB = self.previous_db
 
     def new_client(self):
         return {'cookie': '', 'csrf': ''}
@@ -84,10 +84,12 @@ class ApiTest(unittest.TestCase):
 
     def test_static_application(self):
         conn = http.client.HTTPConnection('127.0.0.1',self.server.server_port)
-        for path, expected in [('/',b'VSM Toolbox'),('/app.js',b'renderStream'),('/style.css',b'.canvas')]:
+        for path, expected in [('/',b'VSM Toolbox'),('/app.js',b'renderStream'),('/style.css',b'.canvas'),('/lib/core.js',b'export'),('/features/bpmn.js',b'bpmnMarkup'),('/features/pcf.js',b'createPCFFeature'),('/features/stream-diagram.js',b'createStreamDiagram')]:
             conn.request('GET',path)
             response=conn.getresponse()
             self.assertEqual(response.status,200)
+            self.assertEqual(response.getheader('Cache-Control'),'no-cache')
+            if path.endswith('.js'): self.assertIn('javascript',response.getheader('Content-Type'))
             self.assertIn(expected,response.read())
         conn.close()
 

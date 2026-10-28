@@ -381,7 +381,7 @@ class EnvironmentTest(test_api.ApiTest):
                 INSERT INTO streams_tags VALUES (7,21);
             '''
             )
-        with mock.patch.object(app, 'DB', legacy):
+        with mock.patch.object(app.storage, 'DB', legacy):
             app.initialize()
             app.initialize()
             with app.connect() as conn:

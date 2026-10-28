@@ -1,6 +1,5 @@
 """Unprivileged application supervisor and fixed-source GitHub updater (Linux)."""
 
-import ast
 import fcntl
 import hashlib
 import gzip
@@ -23,14 +22,8 @@ import zipfile
 import tempfile
 
 REPOSITORY = 'CoxkeLamagra/VSM-Toolbox'
-FILES = (
-    'app.py',
-    'updater.py',
-    'web/index.html',
-    'web/app.js',
-    'web/style.css',
-    'update-manifest.json',
-)
+from vsm.runtime import FILES, LEGACY_FILES, MAX_RUNTIME_FILES, release_files
+
 BUSY = (
     'queued',
     'checking',
@@ -181,8 +174,14 @@ def prepare_release(revision, target):
         prefix = manifests[0].rsplit('/', 1)[0] + '/'
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/', prefix):
             raise ValueError('Invalid update archive root')
-        # Only copy known regular files. Never extract archive paths or links.
-        for filename in FILES:
+        member = next(m for m in archive.getmembers() if m.name == manifests[0])
+        if not member.isfile() or member.size > 16384:
+            raise ValueError('Unsafe update manifest')
+        with archive.extractfile(member) as source:
+            manifest = json.loads(source.read())
+        files = release_files(manifest, allow_legacy=False)
+        # Copy only validated, declared regular files. Never extract archive paths.
+        for filename in files:
             members = [m for m in archive.getmembers() if m.name == prefix + filename]
             if len(members) != 1 or not members[0].isfile() or members[0].size > 2_000_000:
                 raise ValueError('Missing or unsafe update file: ' + filename)
@@ -190,16 +189,6 @@ def prepare_release(revision, target):
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.extractfile(members[0]) as source:
                 destination.write_bytes(source.read())
-    manifest = read_json(target / 'update-manifest.json')
-    if (
-        manifest.get('format') != 1
-        or set(manifest.get('files', [])) != set(FILES)
-        or manifest.get('runtime') != 'python-stdlib'
-        or manifest.get('update_protocol') != 1
-    ):
-        raise ValueError(
-            'This release needs a new installer or Docker image before it can be applied'
-        )
     minimum = manifest.get('python_minimum')
     if (
         not isinstance(minimum, list)
@@ -208,17 +197,9 @@ def prepare_release(revision, target):
         or tuple(minimum) > sys.version_info[:2]
     ):
         raise ValueError('The update requires a different Python runtime')
-    for filename in ('app.py', 'updater.py'):
-        compile((target / filename).read_text(), str(target / filename), 'exec')
-    tree = ast.parse((target / 'app.py').read_text())
-    if not any(
-        isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == 'UPDATE_PROTOCOL' for t in node.targets)
-        and isinstance(node.value, ast.Constant)
-        and node.value.value == 1
-        for node in tree.body
-    ):
-        raise ValueError('Update does not support authenticated update health checks')
+    for filename in files:
+        if filename.endswith('.py'):
+            compile((target / filename).read_text(), str(target / filename), 'exec')
     (target / 'REVISION').write_text(revision + '\n')
     return hashlib.sha256(data).hexdigest()
 
@@ -273,13 +254,10 @@ def validate_backup(path, destination=None):
         raise ValueError('Backup exceeds 128 MiB')
     with zipfile.ZipFile(path) as archive:
         infos = archive.infolist()
-        if len(infos) != len(BACKUP_FILES) + 1 or {i.filename for i in infos} != {
-            *BACKUP_FILES,
-            'backup.json',
-        }:
-            raise ValueError(
-                'Backup must contain exactly the supported application files and database'
-            )
+        if len(infos) > MAX_RUNTIME_FILES + 1:
+            raise ValueError('Backup contains too many files')
+        if any(i.file_size > BACKUP_LIMIT for i in infos):
+            raise ValueError('Oversized backup entry')
         if any(
             i.file_size > BACKUP_LIMIT
             or i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
@@ -288,6 +266,17 @@ def validate_backup(path, destination=None):
             for i in infos
         ):
             raise ValueError('Unsupported encrypted, linked or oversized backup entry')
+        if archive.getinfo('update-manifest.json').file_size > 16384:
+            raise ValueError('Application manifest is too large')
+        application_manifest = json.loads(archive.read('update-manifest.json'))
+        backup_files = (*release_files(application_manifest), 'database.sqlite3')
+        if len(infos) != len(backup_files) + 1 or {i.filename for i in infos} != {
+            *backup_files,
+            'backup.json',
+        }:
+            raise ValueError(
+                'Backup must contain exactly a supported application profile and database'
+            )
         if (
             sum(i.file_size for i in infos) > BACKUP_LIMIT
             or archive.getinfo('backup.json').file_size > 16384
@@ -298,34 +287,24 @@ def validate_backup(path, destination=None):
             not isinstance(manifest, dict)
             or manifest.get('format') != 1
             or not isinstance(manifest.get('sha256'), dict)
-            or set(manifest['sha256']) != set(BACKUP_FILES)
+            or set(manifest['sha256']) != set(backup_files)
         ):
             raise ValueError('Unsupported backup format')
         if not isinstance(manifest.get('revision'), str) or len(manifest['revision']) > 100:
             raise ValueError('Invalid backup revision')
-        for name in BACKUP_FILES:
+        for name in backup_files:
             content = archive.read(name)
             if hashlib.sha256(content).hexdigest() != manifest['sha256'][name]:
                 raise ValueError('Backup checksum mismatch: ' + name)
             if name != 'database.sqlite3' and len(content) > 2_000_000:
                 raise ValueError('Application file too large')
-            if name in ('app.py', 'updater.py'):
+            if name.endswith('.py'):
                 compile(content, name, 'exec')
             if destination:
                 target = destination / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
                 os.chmod(target, 0o600)
-        application_manifest = json.loads(archive.read('update-manifest.json'))
-        if (
-            not isinstance(application_manifest, dict)
-            or application_manifest.get('update_protocol') != 1
-            or application_manifest.get('runtime') != 'python-stdlib'
-            or not isinstance(application_manifest.get('files'), list)
-            or any(not isinstance(n, str) for n in application_manifest['files'])
-            or set(application_manifest['files']) != set(FILES)
-        ):
-            raise ValueError('Backup uses an incompatible application runtime')
         minimum = application_manifest.get('python_minimum', [])
         if (
             not isinstance(minimum, list)
@@ -368,6 +347,10 @@ def validate_backup_database(path):
 
 
 def create_backup(active, db, reason):
+    files = (
+        *release_files(read_json(Path(active['path']) / 'update-manifest.json')),
+        'database.sqlite3',
+    )
     base = directory() / 'backups'
     base.mkdir(parents=True, exist_ok=True)
     os.chmod(base, 0o700)
@@ -379,7 +362,7 @@ def create_backup(active, db, reason):
         hashes = {}
         package = temporary / 'bundle.zip'
         with zipfile.ZipFile(package, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-            for name in BACKUP_FILES:
+            for name in files:
                 source = (
                     temporary / 'database.sqlite3'
                     if name == 'database.sqlite3'
@@ -572,6 +555,12 @@ class Supervisor:
             host = '127.0.0.1'
         url = f'http://{host}:{os.environ.get("VSM_PORT", "8080")}/api/health'
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            manifest = read_json(Path(self.active['path']) / 'update-manifest.json')
+            release_files(manifest)
+            protocol = manifest['update_protocol']
+        except (OSError, ValueError, TypeError):
+            return False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not self.stopping.is_set():
             if self.child.poll() is not None:
@@ -581,7 +570,7 @@ class Supervisor:
                     data = json.load(response)
                 if (
                     data.get('status') == 'ok'
-                    and data.get('update_protocol') == 1
+                    and data.get('update_protocol') == protocol
                     and data.get('revision') == self.active['revision']
                 ):
                     return True

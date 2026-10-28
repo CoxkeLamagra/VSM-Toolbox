@@ -1,9 +1,16 @@
+import { createPCFFeature } from './features/pcf.js';
+import {
+  esc,
+  duration,
+  VALUE_RATINGS,
+  buildWorkspaceIndex,
+  formValues,
+  serviceTimeMetrics,
+} from './lib/core.js';
+import { bpmnMarkup } from './features/bpmn.js';
+import { createStreamDiagram } from './features/stream-diagram.js';
+
 const $ = (s) => document.querySelector(s);
-const esc = (s) =>
-  String(s ?? '').replace(
-    /[&<>"']/g,
-    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
-  );
 let state,
   view = 'streams',
   selected = null,
@@ -91,7 +98,7 @@ async function api(path, method = 'GET', data) {
   if (!r.ok) {
     if (r.status === 401 && session.user) {
       session = {};
-      pcfImportState = null;
+      pcf.importState = null;
       state = null;
       $('#editor').close();
       render();
@@ -123,26 +130,6 @@ async function refresh() {
   await VIEWS[view].load?.();
   render();
 }
-function buildWorkspaceIndex(data) {
-  const group = (items, key) => {
-    const groups = new Map();
-    for (const item of items || []) {
-      if (!groups.has(item[key])) groups.set(item[key], []);
-      groups.get(item[key]).push(item);
-    }
-    return groups;
-  };
-  const stepsByStream = group(data?.steps, 'stream_id');
-  for (const items of stepsByStream.values())
-    items.sort((a, b) => a.position - b.position || a.id - b.id);
-  return {
-    stepsByStream,
-    linksByStep: group(data?.step_processes, 'step_id'),
-    linksByProcess: group(data?.step_processes, 'process_id'),
-    processes: new Map((data?.processes || []).map((process) => [process.id, process])),
-    tags: new Map((data?.tags || []).map((tag) => [tag.id, tag])),
-  };
-}
 let indexedWorkspace, workspaceIndex;
 function getWorkspaceIndex() {
   if (!workspaceIndex || indexedWorkspace !== state) {
@@ -152,7 +139,6 @@ function getWorkspaceIndex() {
   return workspaceIndex;
 }
 const steps = (id) => [...(getWorkspaceIndex().stepsByStream.get(id) || [])];
-const duration = (n) => `${Number(n.toFixed(1))} min`;
 // One registry owns page access, optional loading, rendering, and navigation.
 const VIEWS = {
   streams: { render: renderContent },
@@ -228,40 +214,6 @@ function syncThemeStylesheet() {
   const href = '/branding.css?v=' + (hash >>> 0).toString(16);
   if ($('#brandingStyles').getAttribute('href') !== href) $('#brandingStyles').href = href;
 }
-function formValues(form) {
-  const data = Object.fromEntries(new FormData(form));
-  if (data._tag_picker) {
-    data.tag_ids = Object.keys(data)
-      .filter((key) => key.startsWith('_tag_') && key !== '_tag_picker')
-      .map((key) => Number(key.slice(5)));
-    for (const key of Object.keys(data)) if (key.startsWith('_tag_')) delete data[key];
-  }
-  if (data._pcf_picker) {
-    data.pcf_ids = Object.keys(data)
-      .filter((key) => key.startsWith('_pcf_') && key !== '_pcf_picker')
-      .map((key) => Number(key.slice(5)));
-    for (const key of Object.keys(data)) if (key.startsWith('_pcf_')) delete data[key];
-  }
-  for (const key of ['cva', 'bva', 'takt_available_minutes', 'takt_demand']) {
-    if (key in data) data[key] = data[key] === '' ? null : Number(data[key]);
-  }
-  return data;
-}
-function serviceTimeMetrics(items, stream = {}) {
-  const cycle = items.reduce((total, step) => total + step.work_minutes, 0);
-  const wait = items.reduce((total, step) => total + step.wait_minutes, 0);
-  const takt =
-    stream.takt_available_minutes > 0 && stream.takt_demand > 0
-      ? stream.takt_available_minutes / stream.takt_demand
-      : null;
-  return {
-    cycle,
-    wait,
-    lead: cycle + wait,
-    takt,
-    efficiency: cycle + wait ? Math.round((cycle / (cycle + wait)) * 100) : 0,
-  };
-}
 function stats(items, stream) {
   const times = serviceTimeMetrics(items, stream);
   return `<div class="stats service-time-stats">
@@ -275,9 +227,9 @@ let environmentList = [],
   environmentMembers = [];
 function resetEnvironmentView() {
   selected = null;
-  pcfFocus = null;
-  pcfImportState = null;
-  pcfImportOpen = false;
+  pcf.focus = null;
+  pcf.importState = null;
+  pcf.importOpen = false;
   streamMode = 'diagram';
 }
 async function switchEnvironment(id) {
@@ -545,189 +497,6 @@ function importBPMN(id) {
       bpmnProcessId = process?.id || result.id;
     },
   );
-}
-function bpmnTextLines(text, width, maxLines, measure) {
-  const lines = [];
-  let line = '';
-  for (const word of String(text).trim().split(/\s+/)) {
-    if (line && measure(line + ' ' + word) <= width) {
-      line += ' ' + word;
-      continue;
-    }
-    if (line) lines.push(line);
-    line = '';
-    for (const character of word) {
-      if (line && measure(line + character) > width) {
-        lines.push(line);
-        line = '';
-      }
-      line += character;
-    }
-  }
-  if (line) lines.push(line);
-  if (lines.length > maxLines) {
-    lines.length = maxLines;
-    let last = lines[maxLines - 1];
-    while (last && measure(last + '…') > width) last = Array.from(last).slice(0, -1).join('');
-    lines[maxLines - 1] = last + '…';
-  }
-  return lines;
-}
-function bpmnRoutes(nodes, edges) {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  return edges.map((edge) => {
-    if (edge.waypoints.length) return edge.waypoints;
-    const a = byId.get(edge.source),
-      b = byId.get(edge.target);
-    const start = { x: a.x + a.width / 2, y: a.y + a.height / 2 };
-    const end = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-    const dx = end.x - start.x,
-      dy = end.y - start.y;
-    const from = Math.max(Math.abs(dx) / (a.width / 2), Math.abs(dy) / (a.height / 2), 1);
-    const to = Math.max(Math.abs(dx) / (b.width / 2), Math.abs(dy) / (b.height / 2), 1);
-    return [
-      { x: start.x + dx / from, y: start.y + dy / from },
-      { x: end.x - dx / to, y: end.y - dy / to },
-    ];
-  });
-}
-function bpmnLabelLayout(nodes, routes, measure) {
-  const segments = routes.flatMap((points) =>
-    points.slice(1).map((end, index) => ({ start: points[index], end })),
-  );
-  const labels = [];
-  const overlap = (a, b) =>
-    Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
-    Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
-  const place = (text, candidates, width = 150) => {
-    if (!text.trim()) return '';
-    const lines = bpmnTextLines(text, width, 4, measure);
-    const box = { width: Math.max(...lines.map(measure)) + 8, height: lines.length * 16 + 4 };
-    const boxes = candidates.map((point, index) => {
-      const candidate = { x: point.x - box.width / 2, y: point.y - box.height / 2, ...box };
-      // Prefer clear space around nodes and previously placed labels. Penalize
-      // flow crossings too, using their bounding boxes with a small stroke margin.
-      const cost =
-        nodes.reduce(
-          (sum, node) =>
-            sum +
-            overlap(candidate, {
-              x: node.x - 5,
-              y: node.y - 5,
-              width: node.width + 10,
-              height: node.height + 10,
-            }) *
-              100,
-          0,
-        ) +
-        labels.reduce((sum, label) => sum + overlap(candidate, label) * 20, 0) +
-        segments.reduce(
-          (sum, { start, end }) =>
-            sum +
-            overlap(candidate, {
-              x: Math.min(start.x, end.x) - 2,
-              y: Math.min(start.y, end.y) - 2,
-              width: Math.abs(end.x - start.x) + 4,
-              height: Math.abs(end.y - start.y) + 4,
-            }),
-          0,
-        ) +
-        index * 0.01;
-      return { candidate, cost };
-    });
-    boxes.sort((a, b) => a.cost - b.cost);
-    const boxPosition = boxes[0].candidate;
-    labels.push(boxPosition);
-    const x = boxPosition.x + boxPosition.width / 2;
-    return `<text class="bpmn-external-label" x="${x}" y="${boxPosition.y + 14}" text-anchor="middle"><title>${esc(text)}</title>${lines.map((line, index) => `<tspan x="${x}" dy="${index ? 16 : 0}">${esc(line)}</tspan>`).join('')}</text>`;
-  };
-  return { labels, place };
-}
-function bpmnMarkup(process) {
-  if (!process?.bpmn) return '';
-  const { nodes, edges, omitted_flows } = process.bpmn;
-  const context = document.createElement('canvas').getContext('2d');
-  context.font = '12px sans-serif';
-  const measure = (text) => context.measureText(text).width;
-  const routes = bpmnRoutes(nodes, edges);
-  const { labels, place } = bpmnLabelLayout(nodes, routes, measure);
-  const externalLabels = [];
-  const shapes = nodes
-    .map((node) => {
-      const x = node.x + node.width / 2,
-        y = node.y + node.height / 2;
-      const event = node.kind.endsWith('Event'),
-        gateway = node.kind.endsWith('Gateway');
-      let shape;
-      if (event)
-        shape = `<ellipse cx="${x}" cy="${y}" rx="${node.width / 2}" ry="${node.height / 2}" stroke-width="${node.kind === 'endEvent' ? 4 : 2}"/>`;
-      else if (gateway)
-        shape = `<polygon points="${x},${node.y} ${node.x + node.width},${y} ${x},${node.y + node.height} ${node.x},${y}"/>`;
-      else
-        shape = `<rect x="${node.x}" y="${node.y}" width="${node.width}" height="${node.height}" rx="10"/>`;
-      let text = '';
-      if (event || gateway) {
-        const candidates = [];
-        for (const gap of [28, 48, 68, 88]) {
-          const above = { x, y: node.y - gap },
-            below = { x, y: node.y + node.height + gap };
-          candidates.push(...(gateway ? [above, below] : [below, above]));
-        }
-        externalLabels.push(place(node.name, candidates));
-        const marker = {
-          exclusiveGateway: '×',
-          parallelGateway: '+',
-          inclusiveGateway: '○',
-          eventBasedGateway: '◇',
-          complexGateway: '*',
-        }[node.kind];
-        if (marker)
-          text = `<text class="bpmn-gateway-marker" x="${x}" y="${y}" dominant-baseline="central" text-anchor="middle">${marker}</text>`;
-      } else {
-        const lines = bpmnTextLines(
-          node.name,
-          Math.max(8, node.width - 20),
-          Math.max(1, Math.floor((node.height - 16) / 16)),
-          measure,
-        );
-        text = `<text class="bpmn-task-label" x="${x}" y="${y - lines.length * 8 + 12}" text-anchor="middle">${lines.map((line, index) => `<tspan x="${x}" dy="${index ? 16 : 0}">${esc(line)}</tspan>`).join('')}</text>`;
-      }
-      return `<g class="bpmn-node"><title>${esc(node.kind + ': ' + node.name)}</title>${shape}${text}</g>`;
-    })
-    .join('');
-  const flows = edges
-    .map((edge, index) => {
-      const points = routes[index];
-      const path = points.map((point, i) => `${i ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
-      const candidates = points
-        .slice(1)
-        .map((end, i) => ({ start: points[i], end }))
-        .sort(
-          (a, b) =>
-            Math.hypot(b.end.x - b.start.x, b.end.y - b.start.y) -
-            Math.hypot(a.end.x - a.start.x, a.end.y - a.start.y),
-        )
-        .flatMap(({ start, end }) => {
-          const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
-          return [18, -18, 36, -36, 54, -54].map((offset) => ({
-            x: (start.x + end.x) / 2 + (horizontal ? 0 : offset),
-            y: (start.y + end.y) / 2 + (horizontal ? -offset : 0),
-          }));
-        });
-      externalLabels.push(place(edge.name, candidates, 120));
-      return `<path d="${path}" fill="none" stroke="#64748b" stroke-width="2" ${edge.kind === 'messageFlow' ? 'stroke-dasharray="6 4"' : ''} marker-end="url(#bpmnArrow)"/>`;
-    })
-    .join('');
-  const bounds = [
-    ...nodes,
-    ...labels,
-    ...routes.flat().map((point) => ({ ...point, width: 0, height: 0 })),
-  ];
-  const left = Math.min(...bounds.map((box) => box.x)) - 24;
-  const top = Math.min(...bounds.map((box) => box.y)) - 24;
-  const width = Math.max(...bounds.map((box) => box.x + box.width)) - left + 24;
-  const height = Math.max(...bounds.map((box) => box.y + box.height)) - top + 24;
-  return `<section class="bpmn-panel"><h2>${esc(process.name)} · BPMN</h2><p>Scroll or drag to pan. Adjust zoom to inspect the diagram. Pools, lanes, and extension graphics are not displayed; nested subprocess nodes are shown together.</p>${omitted_flows ? `<p>${omitted_flows} flow(s) to unsupported elements omitted.</p>` : ''}<label>Diagram zoom <input id="bpmnZoom" aria-label="Diagram zoom" type="range" min="25" max="200" value="100"></label><div id="bpmnCanvas" class="bpmn-canvas" tabindex="0" aria-label="BPMN process diagram"><svg role="img" aria-label="${esc(process.name)} BPMN diagram" viewBox="${left} ${top} ${width} ${height}" width="${width}" height="${height}" data-width="${width}" data-height="${height}"><defs><marker id="bpmnArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>${flows}${shapes}<g class="bpmn-labels">${externalLabels.join('')}</g></svg></div></section>`;
 }
 function renderProcesses() {
   $('#content').innerHTML = /* HTML */ `
@@ -998,487 +767,42 @@ function editCategory(id) {
     (data) => api('tag_categories' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data),
   );
 }
-let pcfMode = 'tiles',
-  pcfFocus = null;
-const PCF_TYPES = ['Category', 'Process Group', 'Process', 'Activity', 'Task'];
-function pcfChildren(parentId) {
-  return state.pcf_entries
-    .filter((entry) => entry.parent_id === parentId)
-    .sort((a, b) => a.number - b.number);
+function pcfChildren(...args) {
+  return pcf.pcfChildren(...args);
 }
-function pcfLabel(entry) {
-  return `${entry.index} ${entry.name}`;
+function pcfLabel(...args) {
+  return pcf.pcfLabel(...args);
 }
-function pcfPicker(stream) {
-  return /* HTML */ `
-    <fieldset class="tag-picker pcf-picker">
-      <legend>Linked PCF entries</legend>
-      <input type="hidden" name="_pcf_picker" value="1" />
-      <label>
-        Find PCF entries
-        <input type="search" id="pcfLinkSearch" placeholder="Search by index, name, or reference" />
-      </label>
-      <div id="pcfLinkOptions">
-        ${state.pcf_entries
-          .map(
-            (entry) => /* HTML */ `
-              <label
-                class="check pcf-option"
-                data-pcf-search="${esc((pcfLabel(entry) + ' ' + entry.reference).toLowerCase())}"
-              >
-                <input
-                  type="checkbox"
-                  name="_pcf_${entry.id}"
-                  ${(stream.pcf_ids || []).includes(entry.id) ? 'checked' : ''}
-                />
-                <span>
-                  <b>${esc(pcfLabel(entry))}</b>
-                  <small>${esc(entry.entry_type)}</small>
-                </span>
-              </label>
-            `,
-          )
-          .join('') || '<p>No PCF entries yet. Create them in the PCF framework screen.</p>'}
-      </div>
-    </fieldset>
-  `;
+function pcfPicker(...args) {
+  return pcf.pcfPicker(...args);
 }
-function pcfStreamLinks(stream) {
-  const entries = state.pcf_entries.filter((entry) => (stream.pcf_ids || []).includes(entry.id));
-  return /* HTML */ `
-    <section class="pcf-linked context">
-      <div>
-        <b>PCF CLASSIFICATIONS</b>
-        <div class="pcf-link-list">
-          ${entries
-            .map(
-              (entry) => /* HTML */ `
-                <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
-                  ${esc(pcfLabel(entry))}
-                </button>
-              `,
-            )
-            .join('') || '<p>No PCF classifications linked.</p>'}
-        </div>
-      </div>
-      ${canEdit()
-        ? '<button class="text-button" data-action="edit-stream">Manage PCF links</button>'
-        : ''}
-    </section>
-  `;
+function pcfStreamLinks(...args) {
+  return pcf.pcfStreamLinks(...args);
 }
-function pcfActions(entry) {
-  if (!canEdit()) return '';
-  return /* HTML */ `
-    <div class="detail-actions">
-      ${entry.entry_type !== 'Task'
-        ? /* HTML */ `
-            <button data-action="new-pcf" data-parent="${entry.id}">
-              + Add ${PCF_TYPES[PCF_TYPES.indexOf(entry.entry_type) + 1]}
-            </button>
-          `
-        : ''}
-      <button data-action="edit-pcf" data-id="${entry.id}">Edit entry</button>
-      <button class="danger" data-action="delete-pcf" data-id="${entry.id}">Delete entry</button>
-    </div>
-  `;
+function pcfActions(...args) {
+  return pcf.pcfActions(...args);
 }
-function pcfIndex(entries) {
-  return /* HTML */ `
-    <ul class="pcf-index">
-      ${entries
-        .map((entry) => {
-          const children = pcfChildren(entry.id);
-          return /* HTML */ `
-            <li>
-              ${children.length ? '<details open><summary>' : '<div class="pcf-leaf">'}
-              <span class="pcf-number">${esc(entry.index)}</span>
-              <strong>${esc(entry.name)}</strong>
-              <span class="pill">${esc(entry.entry_type)}</span>
-              ${children.length ? '</summary>' : ''}
-              <div class="pcf-index-actions">
-                <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
-                  Details / drill down
-                </button>
-                ${canEdit()
-                  ? /* HTML */ `
-                      <button class="text-button" data-action="edit-pcf" data-id="${entry.id}">
-                        Edit
-                      </button>
-                    `
-                  : ''}
-              </div>
-              ${children.length ? pcfIndex(children) + '</details>' : '</div>'}
-            </li>
-          `;
-        })
-        .join('')}
-    </ul>
-  `;
+function pcfIndex(...args) {
+  return pcf.pcfIndex(...args);
 }
-let pcfImportState = null;
-let pcfImportOpen = false;
-function pcfImportPanel() {
-  if (!canEdit()) return '';
-  return /* HTML */ `
-    <section id="pcfImportPanel" class="pcf-import" ${pcfImportOpen ? '' : 'hidden'}>
-      <h2>Import PCF from CSV</h2>
-      <p>
-        Columns: PCF ID, Hierarchy ID, Name, and optional Description. Hierarchy IDs determine
-        levels and parents (for example 1, 1.1, 1.1.1). UTF-8 CSV, up to 256 KiB / 5000 entries.
-      </p>
-      <label>
-        PCF CSV file
-        <input id="pcfCSVFile" type="file" accept=".csv,text/csv" />
-      </label>
-      <button data-action="pcf-import-preview">Upload and preview</button>
-      <div id="pcfImportPreview"></div>
-    </section>
-  `;
+function pcfImportPanel(...args) {
+  return pcf.pcfImportPanel(...args);
 }
-function renderPCFImportPreview() {
-  const panel = $('#pcfImportPreview');
-  if (!panel || !pcfImportState) return;
-  const { preview, decisions } = pcfImportState;
-  pcfImportOpen = true;
-  panel.closest('.pcf-import').hidden = false;
-  $('[data-action="pcf-import-toggle"]').setAttribute('aria-expanded', 'true');
-  panel.innerHTML = /* HTML */ `
-    <h2>Review CSV import</h2>
-    <p>
-      ${preview.total} entries: ${preview.new} new and ${preview.duplicates.length} duplicate APQC
-      reference IDs. No changes have been saved.
-    </p>
-    ${preview.duplicates.length
-      ? /* HTML */ `
-          <p>
-            Yes overwrites the existing name, number, and parent. No keeps the existing entry. For
-            Yes, the Description column also replaces the description (including blank values). Omit
-            that column to keep existing descriptions. Value stream links are preserved.
-          </p>
-          <div class="detail-actions">
-            <button data-action="pcf-import-all-yes">Overwrite ALL</button>
-            <button data-action="pcf-import-all-no">Skip ALL</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>APQC reference ID</th>
-                  <th>Existing entry</th>
-                  <th>CSV entry</th>
-                  <th>Overwrite?</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${preview.duplicates
-                  .map(
-                    (row) => /* HTML */ `
-                      <tr>
-                        <td>${esc(row.reference)}</td>
-                        <td>${esc(row.existing_index)} ${esc(row.existing_name)}</td>
-                        <td>${esc(row.index)} ${esc(row.name)}</td>
-                        <td>
-                          <select
-                            data-pcf-decision="${esc(row.reference)}"
-                            aria-label="Overwrite ${esc(row.reference)}"
-                          >
-                            <option value="">Choose…</option>
-                            <option
-                              value="yes"
-                              ${decisions[row.reference] === 'yes' ? 'selected' : ''}
-                            >
-                              Yes
-                            </option>
-                            <option
-                              value="no"
-                              ${decisions[row.reference] === 'no' ? 'selected' : ''}
-                            >
-                              No
-                            </option>
-                          </select>
-                        </td>
-                      </tr>
-                    `,
-                  )
-                  .join('')}
-              </tbody>
-            </table>
-          </div>
-        `
-      : ''}
-    <p class="hint">
-      Missing parents, incompatible levels, and occupied indexes stop the entire import. A skipped
-      parent stays in its current location; imported children follow that retained parent.
-    </p>
-    <button
-      class="primary"
-      data-action="pcf-import-apply"
-      ${preview.duplicates.some((row) => !decisions[row.reference]) ? 'disabled' : ''}
-    >
-      Import entries
-    </button>
-    <button data-action="pcf-import-cancel">Cancel import</button>
-  `;
+function renderPCFImportPreview(...args) {
+  return pcf.renderPCFImportPreview(...args);
 }
-async function previewPCFImport(button) {
-  const file = $('#pcfCSVFile').files[0];
-  pcfImportState = null;
-  $('#pcfImportPreview').replaceChildren();
-  if (!file) throw new Error('Choose a CSV file first.');
-  if (file.size > 256 * 1024) throw new Error('CSV must be up to 256 KiB.');
-  button.disabled = true;
-  try {
-    let text;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
-    } catch {
-      throw new Error('The CSV must use UTF-8 encoding.');
-    }
-    const preview = await api('pcf_import/preview', 'POST', { csv: text });
-    if (view !== 'pcf' || !canEdit()) return;
-    pcfImportState = { text, preview, decisions: Object.create(null) };
-    renderPCFImportPreview();
-  } finally {
-    button.disabled = false;
-  }
+function previewPCFImport(...args) {
+  return pcf.previewPCFImport(...args);
 }
-async function applyPCFImport(button) {
-  if (!pcfImportState) return;
-  button.disabled = true;
-  try {
-    const { text, preview, decisions } = pcfImportState;
-    const result = await api('pcf_import/apply', 'POST', {
-      csv: text,
-      fingerprint: preview.fingerprint,
-      decisions,
-    });
-    pcfImportState = null;
-    pcfImportOpen = false;
-    pcfFocus = null;
-    await refresh();
-    if (view === 'pcf') {
-      const message = document.createElement('p');
-      message.className = 'pcf-import-result';
-      message.setAttribute('role', 'status');
-      message.textContent = `CSV import complete: ${result.created} created, ${result.updated} overwritten, ${result.skipped} skipped.`;
-      $('#content').prepend(message);
-    }
-  } finally {
-    button.disabled = false;
-  }
+function applyPCFImport(...args) {
+  return pcf.applyPCFImport(...args);
 }
-
-function renderPCF() {
-  const focused = state.pcf_entries.find((entry) => entry.id === pcfFocus);
-  if (!focused) pcfFocus = null;
-  const entries = pcfChildren(pcfFocus),
-    ancestors = [];
-  let current = focused;
-  while (current) {
-    ancestors.unshift(current);
-    current = state.pcf_entries.find((entry) => entry.id === current.parent_id);
-  }
-  const linked = focused
-    ? state.streams.filter((stream) => (stream.pcf_ids || []).includes(focused.id))
-    : [];
-  $('#breadcrumb').textContent = 'PCF framework';
-  $('#content').innerHTML = /* HTML */ `
-    <div class="eyebrow">PROCESS CLASSIFICATION FRAMEWORK</div>
-    <div class="title-row">
-      <div>
-        <h1>PCF framework</h1>
-        <p>Document your APQC classifications from category to task.</p>
-      </div>
-      ${canEdit()
-        ? `<div class="detail-actions"><button data-action="pcf-import-toggle" aria-controls="pcfImportPanel" aria-expanded="${pcfImportOpen}">Import from CSV</button><button class="primary" data-action="new-pcf">+ Add PCF entry</button></div>`
-        : ''}
-    </div>
-    ${pcfImportPanel()}
-    <nav class="pcf-breadcrumb" aria-label="PCF hierarchy">
-      <button class="text-button" data-action="pcf-root">All categories</button>
-      ${ancestors
-        .map(
-          (entry) => /* HTML */ `
-            <span aria-hidden="true">/</span>
-            <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
-              ${esc(pcfLabel(entry))}
-            </button>
-          `,
-        )
-        .join('')}
-    </nav>
-    ${focused
-      ? /* HTML */ `
-          <section class="pcf-detail">
-            <span class="pill">${esc(focused.entry_type)}</span>
-            <h2>${esc(pcfLabel(focused))}</h2>
-            ${focused.reference
-              ? /* HTML */ `
-                  <p>APQC reference: ${esc(focused.reference)}</p>
-                `
-              : ''}
-            <p class="pcf-description">${esc(focused.description || 'No description provided.')}</p>
-            ${pcfActions(focused)}
-            <div class="pcf-associated">
-              <b>Linked value streams</b>
-              ${linked
-                .map(
-                  (stream) => /* HTML */ `
-                    <button class="text-button" data-action="pcf-stream" data-id="${stream.id}">
-                      ${esc(stream.name)}
-                    </button>
-                  `,
-                )
-                .join('') || '<p>No value streams linked directly to this entry.</p>'}
-            </div>
-          </section>
-        `
-      : ''}
-    <div class="section-row">
-      <h2>
-        ${focused
-          ? focused.entry_type === 'Task'
-            ? 'Task details'
-            : 'Child entries'
-          : 'Categories'}
-      </h2>
-      <div class="view-switch" role="group" aria-label="PCF view">
-        <button data-action="pcf-tiles" aria-pressed="${pcfMode === 'tiles'}">Tiles</button>
-        <button data-action="pcf-index" aria-pressed="${pcfMode === 'index'}">Index</button>
-      </div>
-    </div>
-    ${entries.length
-      ? pcfMode === 'index'
-        ? pcfIndex(entries)
-        : /* HTML */ `
-            <div class="grid pcf-grid">
-              ${entries
-                .map(
-                  (entry) => /* HTML */ `
-                    <article class="pcf-tile" data-action="open-pcf" data-id="${entry.id}">
-                      <span class="pill">${esc(entry.entry_type)}</span>
-                      <h3>
-                        <button class="pcf-tile-open" data-action="open-pcf" data-id="${entry.id}">
-                          <span class="pcf-number">${esc(entry.index)}</span>
-                          ${esc(entry.name)}
-                        </button>
-                      </h3>
-                      <p>
-                        ${esc(
-                          entry.description ||
-                            entry.reference ||
-                            'Open to explore this classification.',
-                        )}
-                      </p>
-                      <div class="card-meta">
-                        <span>${pcfChildren(entry.id).length} child entries</span>
-                        <button class="text-button" data-action="open-pcf" data-id="${entry.id}">
-                          Drill down →
-                        </button>
-                      </div>
-                    </article>
-                  `,
-                )
-                .join('')}
-            </div>
-          `
-      : /* HTML */ `
-          <div class="empty">
-            <h2>${focused ? 'No child entries' : 'Start your PCF framework'}</h2>
-            <p>
-              ${focused?.entry_type === 'Task'
-                ? 'Task is the final classification level.'
-                : 'Add entries manually to build your numbered process hierarchy.'}
-            </p>
-            ${canEdit() && (!focused || focused.entry_type !== 'Task')
-              ? /* HTML */ `
-                  <button data-action="new-pcf" ${focused ? `data-parent="${focused.id}"` : ''}>
-                    + Add
-                    ${focused ? PCF_TYPES[PCF_TYPES.indexOf(focused.entry_type) + 1] : 'Category'}
-                  </button>
-                `
-              : ''}
-          </div>
-        `}
-  `;
-  renderPCFImportPreview();
+function renderPCF(...args) {
+  return pcf.renderPCF(...args);
 }
-function editPCF(id, parentId) {
-  const entry = state.pcf_entries.find((item) => item.id === id);
-  const parent = state.pcf_entries.find((item) => item.id === parentId);
-  const kind =
-    entry?.entry_type ||
-    (parent ? PCF_TYPES[PCF_TYPES.indexOf(parent.entry_type) + 1] : 'Category');
-  modal(
-    entry ? 'Edit PCF entry' : 'Add PCF entry',
-    field('name', 'Entry name', entry?.name) +
-      /* HTML */ `
-        <label>
-          Entry type
-          <select name="entry_type" id="pcfEntryType" aria-label="Entry type">
-            ${PCF_TYPES.map(
-              (type) => /* HTML */ `
-                <option ${type === kind ? 'selected' : ''}>${type}</option>
-              `,
-            ).join('')}
-          </select>
-        </label>
-        <label>
-          Parent entry
-          <select name="parent_id" id="pcfParent" aria-label="Parent entry"></select>
-        </label>
-      ` +
-      field('number', 'Index number', entry?.number || 1, 'number') +
-      '<p class="hint">A positive number unique among siblings. The full index is built from the parent chain.</p>' +
-      field('reference', 'APQC reference ID (optional)', entry?.reference) +
-      field('description', 'Description', entry?.description, 'textarea'),
-    async (data) => {
-      data.number = Number(data.number);
-      data.parent_id = data.parent_id ? Number(data.parent_id) : null;
-      await api('pcf_entries' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
-      if (!id && parentId) pcfFocus = parentId;
-    },
-  );
-  const updateParents = (selectedParent) => {
-    const level = PCF_TYPES.indexOf($('#pcfEntryType').value);
-    const options = state.pcf_entries.filter(
-      (item) => item.entry_type === PCF_TYPES[level - 1] && item.id !== id,
-    );
-    $('#pcfParent').innerHTML = level
-      ? '<option value="">Choose a parent</option>' +
-        options
-          .map(
-            (item) => /* HTML */ `
-              <option value="${item.id}" ${item.id === selectedParent ? 'selected' : ''}>
-                ${esc(pcfLabel(item))}
-              </option>
-            `,
-          )
-          .join('')
-      : '<option value="">No parent (top level)</option>';
-    $('#pcfParent').required = level > 0;
-    $('#pcfParent').disabled = level === 0;
-    if (!entry)
-      $('#fields [name=number]').value =
-        Math.max(0, ...pcfChildren(selectedParent || null).map((item) => item.number)) + 1;
-  };
-  updateParents(entry?.parent_id || parentId || null);
-  $('#pcfEntryType').onchange = () => updateParents(null);
-  $('#pcfParent').onchange = () => {
-    if (!entry)
-      $('#fields [name=number]').value =
-        Math.max(
-          0,
-          ...pcfChildren(Number($('#pcfParent').value) || null).map((item) => item.number),
-        ) + 1;
-  };
-  $('#fields [name=number]').min = '1';
-  $('#fields [name=number]').step = '1';
-  $('#fields [name=number]').max = '999999';
+function editPCF(...args) {
+  return pcf.editPCF(...args);
 }
-
-const VALUE_RATINGS = { 1: 'Low', 2: 'Medium', 3: 'High' };
 function valueRatingPicker(item) {
   return `<fieldset class="value-ratings"><legend>Value-add classifications</legend>${[
     ['cva', 'Customer Value Add (CVA)'],
@@ -1609,12 +933,12 @@ $('#editor').addEventListener('close', () => {
 });
 $('#content').addEventListener('change', (event) => {
   const reference = event.target.dataset.pcfDecision;
-  if (reference && pcfImportState) {
-    pcfImportState.decisions[reference] = event.target.value;
+  if (reference && pcf.importState) {
+    pcf.importState.decisions[reference] = event.target.value;
     const button = $('[data-action="pcf-import-apply"]');
     if (button)
-      button.disabled = pcfImportState.preview.duplicates.some(
-        (row) => !pcfImportState.decisions[row.reference],
+      button.disabled = pcf.importState.preview.duplicates.some(
+        (row) => !pcf.importState.decisions[row.reference],
       );
   }
 });
@@ -1667,26 +991,26 @@ $('#content').addEventListener('click', async (e) => {
     if (el.dataset.action.startsWith('pcf-import-')) {
       if (!canEdit()) return;
       if (el.dataset.action === 'pcf-import-toggle') {
-        pcfImportOpen = !pcfImportOpen;
-        $('#pcfImportPanel').hidden = !pcfImportOpen;
-        el.setAttribute('aria-expanded', String(pcfImportOpen));
-        if (pcfImportOpen) $('#pcfCSVFile').focus();
+        pcf.importOpen = !pcf.importOpen;
+        $('#pcfImportPanel').hidden = !pcf.importOpen;
+        el.setAttribute('aria-expanded', String(pcf.importOpen));
+        if (pcf.importOpen) $('#pcfCSVFile').focus();
         return;
       }
       if (el.dataset.action === 'pcf-import-preview') return await previewPCFImport(el);
       if (el.dataset.action === 'pcf-import-apply') return await applyPCFImport(el);
       if (el.dataset.action === 'pcf-import-cancel') {
-        pcfImportState = null;
+        pcf.importState = null;
         $('#pcfImportPreview').replaceChildren();
         return;
       }
       if (
-        pcfImportState &&
+        pcf.importState &&
         ['pcf-import-all-yes', 'pcf-import-all-no'].includes(el.dataset.action)
       ) {
         const choice = el.dataset.action === 'pcf-import-all-yes' ? 'yes' : 'no';
-        pcfImportState.decisions = Object.fromEntries(
-          pcfImportState.preview.duplicates.map((row) => [row.reference, choice]),
+        pcf.importState.decisions = Object.fromEntries(
+          pcf.importState.preview.duplicates.map((row) => [row.reference, choice]),
         );
         renderPCFImportPreview();
         return;
@@ -1694,16 +1018,16 @@ $('#content').addEventListener('click', async (e) => {
     }
 
     if (el.dataset.action === 'pcf-index' || el.dataset.action === 'pcf-tiles') {
-      pcfMode = el.dataset.action === 'pcf-index' ? 'index' : 'tiles';
+      pcf.mode = el.dataset.action === 'pcf-index' ? 'index' : 'tiles';
       return render();
     }
     if (el.dataset.action === 'pcf-root') {
-      pcfFocus = null;
+      pcf.focus = null;
       return render();
     }
     if (el.dataset.action === 'open-pcf') {
       view = 'pcf';
-      pcfFocus = id;
+      pcf.focus = id;
       return render();
     }
     if (el.dataset.action === 'pcf-stream') {
@@ -1723,7 +1047,7 @@ $('#content').addEventListener('click', async (e) => {
       )
         return;
       await api('pcf_entries/' + id, 'DELETE');
-      if (pcfFocus === id) pcfFocus = null;
+      if (pcf.focus === id) pcf.focus = null;
       await refresh();
       return;
     }
@@ -1955,7 +1279,7 @@ function render() {
     $('#logout').onclick = async () => {
       try {
         await api('auth/logout', 'POST', {});
-        pcfImportState = null;
+        pcf.importState = null;
         session = {};
         selected = null;
         view = 'streams';
@@ -2508,7 +1832,6 @@ function renderBackups() {
   if (busy) pollMaintenance();
 }
 // Diagram positions are a personal view; they never change delivery order or process links.
-const diagramLayouts = new Map();
 function diagramShell(items) {
   if (!items.length)
     return '<div class="empty"><h2>No delivery steps yet</h2><p>Add a step to start mapping your value stream and its processes.</p><button data-action="new-step">+ Add step</button></div>';
@@ -2579,519 +1902,29 @@ function diagramShell(items) {
   `;
 }
 
-class StreamDiagram {
-  constructor(svg, items) {
-    this.svg = svg;
-    this.frame = svg.closest('.diagram-frame');
-    this.scene = svg.querySelector('.diagram-scene');
-    this.storageKey = `vsm-diagram-v2:${session.user.id}:${session.environment.id}:${selected}`;
-    this.legacyStorageKey =
-      session.environment.id === 1 ? `vsm-diagram-v1:${session.user.id}:${selected}` : null;
-    this.nodes = new Map();
-    this.edges = [];
-    this.pointers = new Map();
-    this.gesture = null;
-    this.camera = { x: 0, y: 0, scale: 1 };
-    this.listeners = new AbortController();
-    const stream = state.streams.find((s) => s.id === selected);
-    this.addNode({
-      key: 'customer',
-      kind: 'terminal',
-      x: 40,
-      y: 100,
-      w: 220,
-      h: 130,
-      name: stream.customer || 'Customer need',
-      caption: 'CUSTOMER / BENEFICIARY',
-    });
-    items.forEach((step, i) =>
-      this.addNode({
-        key: `step-${step.id}`,
-        kind: 'step',
-        id: step.id,
-        x: 340 + i * 340,
-        y: 80,
-        w: 260,
-        h: step.tag_ids?.length ? 259 : 224,
-        lead: step.work_minutes + step.wait_minutes,
-        cva: step.cva,
-        bva: step.bva,
-        tags: assignedTags(step),
-        name: step.name,
-        owner: step.owner,
-        caption: `STEP ${String(i + 1).padStart(2, '0')}`,
-        work: step.work_minutes,
-        wait: step.wait_minutes,
-      }),
-    );
-    this.addNode({
-      key: 'outcome',
-      kind: 'terminal',
-      x: 340 + items.length * 340,
-      y: 100,
-      w: 220,
-      h: 130,
-      name: stream.outcome || 'Value delivered',
-      caption: 'CUSTOMER VALUE',
-    });
-    const sequence = ['customer', ...items.map((s) => `step-${s.id}`), 'outcome'];
-    if (stream.voc) {
-      this.addNode({
-        key: 'voc',
-        kind: 'terminal',
-        x: 680 + items.length * 340,
-        y: 100,
-        w: 280,
-        h: 130,
-        name: stream.voc,
-        caption: 'VOICE OF THE CUSTOMER (VOC)',
-      });
-      sequence.push('voc');
-    }
-    sequence
-      .slice(1)
-      .forEach((key, i) => this.edges.push({ from: sequence[i], to: key, kind: 'flow' }));
-    const rows = new Map(),
-      processes = new Map(state.processes.map((p) => [p.id, p]));
-    const stepIndexes = new Map(items.map((s, i) => [s.id, i]));
-    const links = state.step_processes.filter(
-      (l) => stepIndexes.has(l.step_id) && processes.has(l.process_id),
-    );
-    const processLinkCounts = new Map();
-    for (const link of links)
-      processLinkCounts.set(link.process_id, (processLinkCounts.get(link.process_id) || 0) + 1);
-    links.forEach((link) => {
-      const key = `process-${link.process_id}`;
-      if (!this.nodes.has(key)) {
-        const p = processes.get(link.process_id),
-          column = stepIndexes.get(link.step_id),
-          row = rows.get(column) || 0,
-          count = processLinkCounts.get(p.id);
-        rows.set(column, row + 1);
-        this.addNode({
-          key,
-          kind: 'process',
-          id: p.id,
-          x: 350 + column * 340,
-          y: 350 + row * 180,
-          w: 240,
-          h: p.tag_ids?.length ? 175 : 140,
-          tags: assignedTags(p),
-          name: p.name,
-          owner: p.owner,
-          description: p.description,
-          caption: `PROCESS · ${count} LINKED ${count === 1 ? 'STEP' : 'STEPS'}`,
-        });
-      }
-      this.edges.push({ from: `step-${link.step_id}`, to: key, kind: 'process' });
-    });
-    this.defaults = new Map([...this.nodes].map(([key, n]) => [key, { x: n.x, y: n.y }]));
-    const saved = this.load();
-    for (const [key, position] of Object.entries(saved.positions || {})) {
-      if (this.nodes.has(key) && this.validPoint(position))
-        Object.assign(this.nodes.get(key), { x: position.x, y: position.y });
-    }
-    this.restoreCamera =
-      this.validPoint(saved.camera) &&
-      Number.isFinite(saved.camera.scale) &&
-      saved.camera.scale >= 0.02 &&
-      saved.camera.scale <= 2.5;
-    if (this.restoreCamera)
-      this.camera = { x: saved.camera.x, y: saved.camera.y, scale: saved.camera.scale };
-    this.draw();
-    const signal = this.listeners.signal;
-    svg.addEventListener('pointerdown', (e) => this.pointerDown(e), { signal });
-    svg.addEventListener('pointermove', (e) => this.pointerMove(e), { signal });
-    svg.addEventListener('pointerup', (e) => this.pointerUp(e), { signal });
-    svg.addEventListener('pointercancel', (e) => this.pointerUp(e), { signal });
-    svg.addEventListener(
-      'wheel',
-      (e) => {
-        e.preventDefault();
-        this.zoom(Math.exp(-Math.max(-200, Math.min(200, e.deltaY)) * 0.003), this.point(e));
-        this.save();
-      },
-      { passive: false, signal },
-    );
-    svg.addEventListener(
-      'dblclick',
-      (e) => {
-        const node = e.target.closest('[data-node-key]');
-        if (node) this.details(this.nodes.get(node.dataset.nodeKey));
-      },
-      { signal },
-    );
-    svg.addEventListener('keydown', (e) => this.keyDown(e), { signal });
-    this.frame.querySelector('.diagram-controls').addEventListener(
-      'click',
-      (e) => {
-        const action = e.target.closest('[data-diagram]')?.dataset.diagram;
-        if (action === 'zoom-in') this.zoom(1.2);
-        if (action === 'zoom-out') this.zoom(1 / 1.2);
-        if (action === 'fit') this.fit();
-        if (action === 'reset') {
-          for (const [key, p] of this.defaults) Object.assign(this.nodes.get(key), p);
-          this.drawPositions();
-          this.fit();
-        }
-        if (action) this.save();
-      },
-      { signal },
-    );
-    this.observer = new ResizeObserver(() => {
-      this.svg.setAttribute('viewBox', `0 0 ${this.svg.clientWidth} ${this.svg.clientHeight}`);
-      if (!this.sized) {
-        this.sized = true;
-        if (this.restoreCamera) this.applyCamera();
-        else this.fit();
-      }
-    });
-    this.observer.observe(svg);
-  }
-  addNode(node) {
-    this.nodes.set(node.key, node);
-  }
-  validPoint(p) {
-    return (
-      p &&
-      Number.isFinite(p.x) &&
-      Number.isFinite(p.y) &&
-      Math.abs(p.x) <= 1e7 &&
-      Math.abs(p.y) <= 1e7
-    );
-  }
-  load() {
-    try {
-      return (
-        diagramLayouts.get(this.storageKey) ||
-        JSON.parse(
-          localStorage.getItem(this.storageKey) ||
-            (this.legacyStorageKey ? localStorage.getItem(this.legacyStorageKey) : null),
-        ) ||
-        {}
-      );
-    } catch {
-      return {};
-    }
-  }
-  save() {
-    const data = {
-      positions: Object.fromEntries([...this.nodes].map(([key, n]) => [key, { x: n.x, y: n.y }])),
-      camera: { ...this.camera },
-    };
-    diagramLayouts.set(this.storageKey, data);
-    try {
-      localStorage.setItem(this.storageKey, JSON.stringify(data));
-    } catch {
-      /* Private browsing or full storage: retain the view for this session. */
-    }
-  }
-  textLines(text, limit, maxLines) {
-    const words = String(text || '')
-        .split(/\s+/)
-        .filter(Boolean),
-      lines = [];
-    let line = '';
-    for (const word of words) {
-      if ((line + ' ' + word).trim().length <= limit) line = (line + ' ' + word).trim();
-      else {
-        if (line) lines.push(line);
-        line = word;
-      }
-    }
-    if (line) lines.push(line);
-    const result = lines
-      .slice(0, maxLines)
-      .map((s) => (s.length > limit ? s.slice(0, limit - 1) + '…' : s));
-    if (lines.length > maxLines)
-      result[maxLines - 1] = result[maxLines - 1].slice(0, limit - 1) + '…';
-    return result;
-  }
-  title(node) {
-    return this.textLines(node.name, node.kind === 'step' ? 25 : 23, 2)
-      .map(
-        (line, i) => /* HTML */ `
-          <tspan x="20" dy="${i ? 21 : 0}">${esc(line)}</tspan>
-        `,
-      )
-      .join('');
-  }
-  draw() {
-    this.svg.querySelector('.diagram-edges').innerHTML = this.edges
-      .map(
-        (e, i) => /* HTML */ `
-          <path
-            data-edge-index="${i}"
-            class="diagram-edge ${e.kind}"
-            ${e.kind === 'flow' ? 'marker-end="url(#flowArrow)"' : ''}
-          >
-            <title>
-              ${e.kind === 'flow' ? 'Delivery sequence' : 'Linked process'}:
-              ${esc(this.nodes.get(e.from).name)} → ${esc(this.nodes.get(e.to).name)}
-            </title>
-          </path>
-        `,
-      )
-      .join('');
-    this.svg.querySelector('.diagram-nodes').innerHTML = [...this.nodes.values()]
-      .map((node) => this.nodeMarkup(node))
-      .join('');
-    this.drawPositions();
-    this.applyCamera();
-  }
-  // SVG text is kept adjacent to its tags: formatting whitespace is visible here.
-  nodeDetailsMarkup(node) {
-    if (node.kind === 'step') {
-      return `<text class="node-owner" x="20" y="104">${esc(this.textLines(node.owner || 'No owner assigned', 32, 1)[0])}</text>
-        <path class="node-divider" d="M20 120 H${node.w - 20}"/>
-        <text class="node-timing" x="20" y="147">Cycle ${duration(node.work)}</text>
-        <text class="node-timing" x="140" y="147">Wait ${duration(node.wait)}</text>
-        <text class="node-timing" x="20" y="172">Lead ${duration(node.lead)}</text>
-        <text class="node-owner" x="20" y="196">${esc(['cva', 'bva'].map((key) => `${key.toUpperCase()}: ${node[key] ? `${node[key]} - ${VALUE_RATINGS[node[key]]}` : 'Not rated'}`).join(' · '))}</text>`;
-    }
-    if (node.kind === 'process') {
-      return `<text class="node-owner" x="20" y="103">${esc(this.textLines(node.owner || 'No owner assigned', 30, 1)[0])}</text>
-        <text class="node-description" x="20" y="124">${esc(this.textLines(node.description || 'Open for process details', 31, 1)[0])}</text>`;
-    }
-    return '<text class="node-owner" x="20" y="105">Value stream boundary</text>';
-  }
-  nodeTagsMarkup(node) {
-    return (node.tags || [])
-      .slice(0, 2)
-      .map((tag, index) => {
-        const x = 20 + index * 108;
-        return `<g class="tag-color-${tag.id}"><rect class="svg-tag-bg" x="${x}" y="${node.h - 32}" width="100" height="22" rx="11"/>
-        <text class="svg-tag-text" x="${x + 8}" y="${node.h - 17}">${esc(this.textLines(tag.name, 11, 1)[0])}</text></g>`;
-      })
-      .join('');
-  }
-  nodeMarkup(node) {
-    const kind = node.kind === 'step' ? 'delivery-step' : node.kind;
-    const label =
-      node.caption +
-      ': ' +
-      node.name +
-      '. Drag or use arrow keys to move.' +
-      (node.kind !== 'terminal' ? ' Enter for details.' : '');
-    const title =
-      node.name +
-      (node.owner ? ' — ' + node.owner : '') +
-      (node.tags?.length ? ' · Tags: ' + node.tags.map((tag) => tag.name).join(', ') : '');
-    return `<g class="diagram-node ${kind}" data-node-key="${node.key}" tabindex="0" role="button" aria-label="${esc(label)}">
-      <title>${esc(title)}</title>
-      <rect class="node-shadow" x="0" y="4" width="${node.w}" height="${node.h}" rx="12"/>
-      <rect class="node-body" width="${node.w}" height="${node.h}" rx="12"/>
-      <rect class="node-accent" x="0" y="12" width="4" height="${node.h - 24}" rx="2"/>
-      <text class="node-caption" x="20" y="29">${esc(node.caption)}</text>
-      <text class="node-title" x="20" y="57">${this.title(node)}</text>
-      ${this.nodeDetailsMarkup(node)}${this.nodeTagsMarkup(node)}</g>`;
-  }
-  drawPositions() {
-    this.svg.querySelectorAll('[data-node-key]').forEach((el) => {
-      const n = this.nodes.get(el.dataset.nodeKey);
-      el.setAttribute('transform', `translate(${n.x} ${n.y})`);
-    });
-    this.svg.querySelectorAll('[data-edge-index]').forEach((el) => {
-      const e = this.edges[Number(el.dataset.edgeIndex)],
-        a = this.nodes.get(e.from),
-        b = this.nodes.get(e.to);
-      let x1, y1, x2, y2, c1x, c1y, c2x, c2y;
-      if (e.kind === 'flow') {
-        const forward = b.x + b.w / 2 >= a.x + a.w / 2;
-        x1 = a.x + (forward ? a.w : 0);
-        y1 = a.y + a.h / 2;
-        x2 = b.x + (forward ? 0 : b.w);
-        y2 = b.y + b.h / 2;
-        const curve = Math.max(45, Math.abs(x2 - x1) / 2);
-        c1x = x1 + (forward ? curve : -curve);
-        c1y = y1;
-        c2x = x2 + (forward ? -curve : curve);
-        c2y = y2;
-      } else {
-        const below = b.y + b.h / 2 >= a.y + a.h / 2,
-          side = a.x + a.w / 2 > b.x + b.w / 2 ? 1 : -1;
-        x1 = a.x + a.w / 2;
-        y1 = a.y + (below ? a.h : 0);
-        x2 = b.x + (side === 1 ? b.w : 0);
-        y2 = b.y + b.h / 2;
-        const lane = x2 + side * 36,
-          bend = y1 + (below ? 50 : -50),
-          approach = y2 >= bend ? 1 : -1;
-        // Route beside stacked processes so a link never implies a process-to-process chain.
-        el.setAttribute(
-          'd',
-          `M${x1} ${y1} C${x1} ${bend} ${lane} ${bend} ${lane} ${bend + (below ? 20 : -20)} L${lane} ${y2 - approach * 20} Q${lane} ${y2} ${x2} ${y2}`,
-        );
-        return;
-      }
-      el.setAttribute('d', `M${x1} ${y1} C${c1x} ${c1y} ${c2x} ${c2y} ${x2} ${y2}`);
-    });
-  }
-  point(e) {
-    const r = this.svg.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-  }
-  world(point) {
-    return {
-      x: (point.x - this.camera.x) / this.camera.scale,
-      y: (point.y - this.camera.y) / this.camera.scale,
-    };
-  }
-  applyCamera() {
-    this.scene.setAttribute(
-      'transform',
-      `translate(${this.camera.x} ${this.camera.y}) scale(${this.camera.scale})`,
-    );
-    $('#diagramZoom').textContent = Math.round(this.camera.scale * 100) + '%';
-  }
-  zoom(factor, anchor = { x: this.svg.clientWidth / 2, y: this.svg.clientHeight / 2 }) {
-    const world = this.world(anchor),
-      scale = Math.max(0.02, Math.min(2.5, this.camera.scale * factor));
-    this.camera = { x: anchor.x - world.x * scale, y: anchor.y - world.y * scale, scale };
-    this.applyCamera();
-  }
-  fit() {
-    const nodes = [...this.nodes.values()],
-      left = Math.min(...nodes.map((n) => n.x)),
-      top = Math.min(...nodes.map((n) => n.y));
-    const width = Math.max(...nodes.map((n) => n.x + n.w)) - left,
-      height = Math.max(...nodes.map((n) => n.y + n.h)) - top;
-    const scale = Math.max(
-      0.02,
-      Math.min(1, (this.svg.clientWidth - 64) / width, (this.svg.clientHeight - 64) / height),
-    );
-    this.camera = {
-      x: (this.svg.clientWidth - width * scale) / 2 - left * scale,
-      y: (this.svg.clientHeight - height * scale) / 2 - top * scale,
-      scale,
-    };
-    this.applyCamera();
-  }
-  pointerDown(e) {
-    if (e.button !== 0 && e.button !== 1) return;
-    e.preventDefault();
-    const point = this.point(e);
-    this.pointers.set(e.pointerId, point);
-    const nodeElement = e.target.closest('[data-node-key]');
-    (nodeElement || this.svg).setPointerCapture(e.pointerId);
-    if (this.pointers.size === 2) {
-      const [a, b] = [...this.pointers.values()],
-        center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      this.gesture = {
-        type: 'pinch',
-        distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
-        scale: this.camera.scale,
-        world: this.world(center),
-      };
-    } else if (this.pointers.size === 1) {
-      const node =
-        e.button === 0 && nodeElement ? this.nodes.get(nodeElement.dataset.nodeKey) : null;
-      this.gesture = {
-        type: node ? 'node' : 'pan',
-        start: point,
-        camera: { ...this.camera },
-        node,
-        nodeStart: node ? { x: node.x, y: node.y } : null,
-      };
-      (nodeElement || this.svg).focus({ preventScroll: true });
-    }
-    this.svg.classList.add('is-dragging');
-  }
-  pointerMove(e) {
-    if (!this.pointers.has(e.pointerId) || !this.gesture) return;
-    const point = this.point(e);
-    this.pointers.set(e.pointerId, point);
-    const g = this.gesture;
-    if (g.type === 'pinch' && this.pointers.size >= 2) {
-      const [a, b] = [...this.pointers.values()],
-        center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const scale = Math.max(
-        0.02,
-        Math.min(2.5, (g.scale * Math.hypot(b.x - a.x, b.y - a.y)) / g.distance),
-      );
-      this.camera = { x: center.x - g.world.x * scale, y: center.y - g.world.y * scale, scale };
-      this.applyCamera();
-    } else if (g.type === 'node') {
-      g.node.x = Math.max(
-        -1e6,
-        Math.min(1e6, g.nodeStart.x + (point.x - g.start.x) / this.camera.scale),
-      );
-      g.node.y = Math.max(
-        -1e6,
-        Math.min(1e6, g.nodeStart.y + (point.y - g.start.y) / this.camera.scale),
-      );
-      this.drawPositions();
-    } else if (g.type === 'pan') {
-      this.camera.x = g.camera.x + point.x - g.start.x;
-      this.camera.y = g.camera.y + point.y - g.start.y;
-      this.applyCamera();
-    }
-  }
-  pointerUp(e) {
-    if (!this.pointers.has(e.pointerId)) return;
-    this.pointers.delete(e.pointerId);
-    if (this.pointers.size === 1)
-      this.gesture = {
-        type: 'pan',
-        start: [...this.pointers.values()][0],
-        camera: { ...this.camera },
-      };
-    else {
-      this.gesture = null;
-      this.svg.classList.remove('is-dragging');
-    }
-    this.save();
-  }
-  keyDown(e) {
-    const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    const key = e.target.closest('[data-node-key]')?.dataset.nodeKey,
-      node = this.nodes.get(key);
-    if (arrows[e.key]) {
-      e.preventDefault();
-      const [dx, dy] = arrows[e.key],
-        distance = e.shiftKey ? 100 : 20;
-      if (node) {
-        node.x += dx * distance;
-        node.y += dy * distance;
-        this.drawPositions();
-      } else {
-        this.camera.x -= dx * distance;
-        this.camera.y -= dy * distance;
-        this.applyCamera();
-      }
-      this.save();
-    } else if (e.key === '+' || e.key === '=') {
-      e.preventDefault();
-      this.zoom(1.2);
-      this.save();
-    } else if (e.key === '-' || e.key === '_') {
-      e.preventDefault();
-      this.zoom(1 / 1.2);
-      this.save();
-    } else if (e.key === '0') {
-      e.preventDefault();
-      this.fit();
-      this.save();
-    } else if ((e.key === 'Enter' || e.key === ' ') && node) {
-      e.preventDefault();
-      this.details(node);
-    }
-  }
-  details(node) {
-    if (node.kind === 'process') editProcess(node.id);
-    if (node.kind === 'step') {
-      if (canEdit()) editStep(node.id);
-      else {
-        const step = state.steps.find((s) => s.id === node.id);
-        modal('Step details', stepFields(step), null, true);
-      }
-    }
-  }
-  destroy() {
-    this.listeners.abort();
-    this.observer.disconnect();
-  }
-}
+const pcf = createPCFFeature({
+  getState: () => state,
+  getView: () => view,
+  canEdit,
+  api,
+  refresh,
+  modal,
+  field,
+  $,
+});
+
+const StreamDiagram = createStreamDiagram({
+  getState: () => state,
+  getSession: () => session,
+  getSelected: () => selected,
+  assignedTags,
+  editProcess,
+  editStep,
+  canEdit,
+  modal,
+  stepFields,
+  $,
+});
 
 $('#adminToggle').onclick = () => {
   const expanded = $('#adminToggle').getAttribute('aria-expanded') !== 'true';

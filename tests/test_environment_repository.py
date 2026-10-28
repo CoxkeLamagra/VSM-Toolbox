@@ -12,7 +12,7 @@ class EnvironmentRepositoryTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        database = mock.patch.object(app, 'DB', Path(temporary.name) / 'workspace.sqlite3')
+        database = mock.patch.object(app.storage, 'DB', Path(temporary.name) / 'workspace.sqlite3')
         database.start()
         self.addCleanup(database.stop)
         app.initialize()

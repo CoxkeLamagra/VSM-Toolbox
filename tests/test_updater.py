@@ -23,7 +23,7 @@ class UpdaterTest(unittest.TestCase):
         self.environment=mock.patch.dict(os.environ,{'VSM_DATABASE':str(self.db),'VSM_UPDATE_DIR':str(self.base/'updates'),
                                                    'VSM_HOST':'127.0.0.1','VSM_PORT':str(port),'VSM_REVISION':'1'*40})
         self.environment.start()
-        with mock.patch.object(app,'DB',self.db):
+        with mock.patch.object(app.storage,'DB',self.db):
             app.initialize()
             with app.connect() as conn:
                 conn.execute("INSERT INTO streams (name) VALUES ('Original service')")

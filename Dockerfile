@@ -2,6 +2,7 @@ FROM python:3.13-slim-trixie
 WORKDIR /app
 COPY app.py updater.py update-manifest.json ./
 COPY web ./web
+COPY vsm ./vsm
 RUN chmod -R a+rX /app && useradd --system --uid 10001 --create-home vsm && mkdir /data && chown vsm:vsm /data
 USER vsm
 ENV VSM_HOST=0.0.0.0 VSM_PORT=8080 VSM_DATABASE=/data/vsm.sqlite3
