@@ -111,6 +111,13 @@ def initialize():
             conn.execute("ALTER TABLE streams ADD COLUMN voc TEXT NOT NULL DEFAULT ''")
         if 'bpmn_xml' not in {row['name'] for row in conn.execute('PRAGMA table_info(processes)')}:
             conn.execute("ALTER TABLE processes ADD COLUMN bpmn_xml TEXT NOT NULL DEFAULT ''")
+        for table in ('streams', 'steps'):
+            columns = {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}
+            for rating in ('cva', 'bva'):
+                if rating not in columns:
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {rating} INTEGER CHECK({rating} IS NULL OR (typeof({rating})='integer' AND {rating} BETWEEN 1 AND 3))"
+                    )
         migrate_environments(conn)
         initialize_environment_guards(conn)
 
@@ -335,7 +342,16 @@ RESOURCES = {
     'tags': ResourceSpec({'name': str, 'color': str, 'category_id': int}, ('Admin',)),
     'tag_categories': ResourceSpec({'name': str}, ('Admin',)),
     'streams': ResourceSpec(
-        {'name': str, 'customer': str, 'outcome': str, 'description': str, 'voc': str}, tagged=True
+        {
+            'name': str,
+            'customer': str,
+            'outcome': str,
+            'description': str,
+            'voc': str,
+            'cva': int,
+            'bva': int,
+        },
+        tagged=True,
     ),
     'steps': ResourceSpec(
         {
@@ -345,6 +361,8 @@ RESOURCES = {
             'position': int,
             'work_minutes': float,
             'wait_minutes': float,
+            'cva': int,
+            'bva': int,
         },
         tagged=True,
         order_by='position, id',
@@ -595,6 +613,16 @@ class ContentRepository:
         spec = RESOURCES[table]
         if table == 'processes' and values.get('bpmn_xml'):
             parse_bpmn(values['bpmn_xml'])
+        if table in ('streams', 'steps'):
+            for rating in ('cva', 'bva'):
+                if (
+                    rating in values
+                    and values[rating] is not None
+                    and (type(values[rating]) is not int or values[rating] not in (1, 2, 3))
+                ):
+                    raise ValueError(
+                        rating.upper() + ' must be 1 (Low), 2 (Medium), 3 (High), or null (unrated)'
+                    )
         tag_ids = None
         pcf_ids = None
         if table == 'streams' and 'pcf_ids' in values:
@@ -639,6 +667,8 @@ class ContentRepository:
             raise ValueError('name and, for steps, stream_id are required')
         for key, value in values.items():
             kind = spec.fields[key]
+            if key in ('cva', 'bva') and value is None:
+                continue
             if kind is str and (
                 not isinstance(value, str) or len(value) > (262144 if key == 'bpmn_xml' else 20000)
             ):

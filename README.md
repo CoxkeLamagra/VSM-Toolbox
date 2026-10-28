@@ -432,3 +432,10 @@ The installer backs up the managed files before activation, runs `nginx -t`, che
 For a publicly or internally trusted certificate instead, the separate `deploy/nginx-vsm-toolbox.conf` remains an example for manually managed hostname-based TLS. Avoid rerunning the automatic self-signed setup over a manual proxy deployment without reviewing its managed site and certificate paths. For Docker, keep Compose's loopback-only port publication and configure the proxy on the host using that example; automatic self-signed provisioning here targets Debian LXC.
 
 The application caps HTTP workers at 32, idle socket waits at 15 seconds, and each backend connection at 120 seconds, including uploads and downloads. Large transfers must complete within that deadline. Login failures use an ASCII-case-insensitive account/source key (ten failures per five-minute window). A broader source failure counter returns 429 for further failed guesses after 100 failures, while valid unrelated accounts can still sign in. Failed attempts continue to count toward their own account limit even when the broader counter is exhausted. Expired records are removed and storage is capped at 10,000 entries. No forwarded client-IP header is trusted; configure additional abuse controls at your trusted proxy.
+
+
+### Value-add ratings
+
+Value streams and individual delivery steps each have independent **Customer Value Add (CVA)** and **Business Value Add (BVA)** classifications: **3 - High**, **2 - Medium**, **1 - Low**, or **Not rated**. Set or clear them in the stream/step edit forms. Ratings appear on stream cards, stream details, delivery-flow cards, and diagram step cards. Stream ratings are entered directly, rather than calculated from step ratings. Existing records remain unrated. Environment Admins/Editors can edit ratings; Viewers can inspect them.
+
+The stream and step API resources accept optional `cva` and `bva` fields with integer values 1–3 or `null` to clear a rating. Omitting either field on update preserves its current value. The database migration is additive, and local backups retain ratings with their stream/step records.

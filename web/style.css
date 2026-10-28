@@ -1488,3 +1488,21 @@ body.sidebar-collapsed .app-version {
   font-size: 20px;
   font-weight: 600;
 }
+
+.value-rating-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.value-rating-badges .pill {
+  letter-spacing: 0;
+}
+.value-ratings {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid #e0e1e7;
+  border-radius: 8px;
+}

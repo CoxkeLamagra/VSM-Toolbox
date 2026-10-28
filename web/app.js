@@ -217,6 +217,9 @@ function formValues(form) {
       .map((key) => Number(key.slice(5)));
     for (const key of Object.keys(data)) if (key.startsWith('_pcf_')) delete data[key];
   }
+  for (const key of ['cva', 'bva']) {
+    if (key in data) data[key] = data[key] === '' ? null : Number(data[key]);
+  }
   return data;
 }
 function stats(items) {
@@ -373,7 +376,7 @@ function renderContent() {
                           s.outcome || s.description || 'Define the outcome this stream delivers.',
                         )}
                       </p>
-                      ${tagBadges(s)}
+                      ${valueRatingBadges(s)}${tagBadges(s)}
                     </div>
                     <div class="card-meta">
                       <span>${esc(s.customer || 'Customer not defined')}</span>
@@ -415,7 +418,7 @@ function renderStream() {
           ? items
               .map(
                 (s, i) =>
-                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${tagBadges(s)}<div class="timing"><div>Work time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div></div>${state.step_processes
+                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${valueRatingBadges(s)}${tagBadges(s)}<div class="timing"><div>Work time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div></div>${state.step_processes
                     .filter((l) => l.step_id === s.id)
                     .map(
                       (l) => /* HTML */ `
@@ -447,7 +450,7 @@ function renderStream() {
         <p>
           ${esc(stream.description || 'Follow the journey from customer need to delivered value.')}
         </p>
-        ${tagBadges(stream)}
+        ${valueRatingBadges(stream)}${tagBadges(stream)}
       </div>
       <div class="detail-actions">
         <button data-action="edit-stream">Edit details</button>
@@ -1440,11 +1443,27 @@ function editPCF(id, parentId) {
   $('#fields [name=number]').max = '999999';
 }
 
+const VALUE_RATINGS = { 1: 'Low', 2: 'Medium', 3: 'High' };
+function valueRatingPicker(item) {
+  return `<fieldset class="value-ratings"><legend>Value-add classifications</legend>${[
+    ['cva', 'Customer Value Add (CVA)'],
+    ['bva', 'Business Value Add (BVA)'],
+  ]
+    .map(
+      ([key, label]) =>
+        `<label>${label}<select name="${key}" aria-label="${label}"><option value="">Not rated</option>${[3, 2, 1].map((rating) => `<option value="${rating}" ${item[key] === rating ? 'selected' : ''}>${rating} - ${VALUE_RATINGS[rating]}</option>`).join('')}</select></label>`,
+    )
+    .join('')}</fieldset>`;
+}
+function valueRatingBadges(item) {
+  return `<div class="value-rating-badges">${['cva', 'bva'].map((key) => `<span class="pill" title="${key === 'cva' ? 'Customer' : 'Business'} Value Add">${key.toUpperCase()}: ${item[key] ? `${item[key]} - ${VALUE_RATINGS[item[key]]}` : 'Not rated'}</span>`).join('')}</div>`;
+}
 function editStream(id) {
   const s = state.streams.find((s) => s.id === id) || {};
   modal(
     id ? 'Edit value stream' : 'Create value stream',
     field('name', 'Stream name', s.name) +
+      valueRatingPicker(s) +
       field('customer', 'Customer / beneficiary', s.customer) +
       field('outcome', 'Desired value', s.outcome) +
       field('description', 'Description', s.description, 'textarea') +
@@ -1463,6 +1482,7 @@ function editStep(id) {
   modal(
     id ? 'Edit step' : 'Add delivery step',
     field('name', 'Step name', s.name) +
+      valueRatingPicker(s) +
       field('owner', 'Responsible team / owner', s.owner) +
       field('work_minutes', 'Active work time (minutes)', s.work_minutes, 'number') +
       field('wait_minutes', 'Waiting time (minutes)', s.wait_minutes, 'number') +
@@ -2524,7 +2544,9 @@ class StreamDiagram {
         x: 340 + i * 340,
         y: 80,
         w: 260,
-        h: step.tag_ids?.length ? 205 : 170,
+        h: step.tag_ids?.length ? 235 : 200,
+        cva: step.cva,
+        bva: step.bva,
         tags: assignedTags(step),
         name: step.name,
         owner: step.owner,
@@ -2754,7 +2776,8 @@ class StreamDiagram {
       return `<text class="node-owner" x="20" y="104">${esc(this.textLines(node.owner || 'No owner assigned', 32, 1)[0])}</text>
         <path class="node-divider" d="M20 120 H${node.w - 20}"/>
         <text class="node-timing" x="20" y="147">Work ${duration(node.work)}</text>
-        <text class="node-timing" x="140" y="147">Wait ${duration(node.wait)}</text>`;
+        <text class="node-timing" x="140" y="147">Wait ${duration(node.wait)}</text>
+        <text class="node-owner" x="20" y="172">${esc(['cva', 'bva'].map((key) => `${key.toUpperCase()}: ${node[key] ? `${node[key]} - ${VALUE_RATINGS[node[key]]}` : 'Not rated'}`).join(' · '))}</text>`;
     }
     if (node.kind === 'process') {
       return `<text class="node-owner" x="20" y="103">${esc(this.textLines(node.owner || 'No owner assigned', 30, 1)[0])}</text>
@@ -2993,6 +3016,7 @@ class StreamDiagram {
         modal(
           'Step details',
           field('name', 'Step name', step.name) +
+            valueRatingPicker(step) +
             field('owner', 'Responsible team / owner', step.owner) +
             field('work_minutes', 'Active work time (minutes)', step.work_minutes) +
             field('wait_minutes', 'Waiting time (minutes)', step.wait_minutes),
