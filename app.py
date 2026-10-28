@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 import updater
 
 UPDATE_PROTOCOL = 1
-APP_VERSION = '0.7.0-dev'
+APP_VERSION = '1.0.0'
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get('VSM_DATABASE', ROOT / 'data' / 'vsm.sqlite3'))
 
