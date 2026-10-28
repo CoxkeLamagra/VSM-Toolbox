@@ -118,6 +118,16 @@ def initialize():
                     conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN {rating} INTEGER CHECK({rating} IS NULL OR (typeof({rating})='integer' AND {rating} BETWEEN 1 AND 3))"
                     )
+        stream_columns = {row['name'] for row in conn.execute('PRAGMA table_info(streams)')}
+        for name in ('takt_available_minutes', 'takt_demand'):
+            if name not in stream_columns:
+                conn.execute(
+                    f'ALTER TABLE streams ADD COLUMN {name} REAL CHECK({name} IS NULL OR {name}>0)'
+                )
+        if 'takt_period' not in stream_columns:
+            conn.execute(
+                "ALTER TABLE streams ADD COLUMN takt_period TEXT NOT NULL DEFAULT 'day' CHECK(takt_period IN ('shift','day','week','month'))"
+            )
         migrate_environments(conn)
         initialize_environment_guards(conn)
 
@@ -348,6 +358,9 @@ RESOURCES = {
             'outcome': str,
             'description': str,
             'voc': str,
+            'takt_available_minutes': float,
+            'takt_demand': float,
+            'takt_period': str,
             'cva': int,
             'bva': int,
         },
@@ -623,6 +636,25 @@ class ContentRepository:
                     raise ValueError(
                         rating.upper() + ' must be 1 (Low), 2 (Medium), 3 (High), or null (unrated)'
                     )
+        if table == 'streams':
+            if 'takt_period' in values and values['takt_period'] not in (
+                'shift',
+                'day',
+                'week',
+                'month',
+            ):
+                raise ValueError('Takt period must be shift, day, week, or month')
+            for name in ('takt_available_minutes', 'takt_demand'):
+                if (
+                    name in values
+                    and values[name] is not None
+                    and (
+                        type(values[name]) not in (int, float)
+                        or not math.isfinite(values[name])
+                        or values[name] <= 0
+                    )
+                ):
+                    raise ValueError(name + ' must be a finite positive number or null')
         tag_ids = None
         pcf_ids = None
         if table == 'streams' and 'pcf_ids' in values:
@@ -667,7 +699,7 @@ class ContentRepository:
             raise ValueError('name and, for steps, stream_id are required')
         for key, value in values.items():
             kind = spec.fields[key]
-            if key in ('cva', 'bva') and value is None:
+            if key in ('cva', 'bva', 'takt_available_minutes', 'takt_demand') and value is None:
                 continue
             if kind is str and (
                 not isinstance(value, str) or len(value) > (262144 if key == 'bpmn_xml' else 20000)

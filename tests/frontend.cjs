@@ -146,3 +146,35 @@ assert.deepEqual(
   ['A…'],
 );
 console.log('BPMN wrapping checks passed: box widths, long words, Unicode, and truncation.');
+
+const serviceTimes = vm.createContext({});
+vm.runInContext(
+  source.slice(source.indexOf('function serviceTimeMetrics('), source.indexOf('function stats(')),
+  serviceTimes,
+);
+const metrics = (steps, stream) =>
+  JSON.parse(JSON.stringify(serviceTimes.serviceTimeMetrics(steps, stream)));
+assert.deepEqual(
+  metrics(
+    [
+      { work_minutes: 10, wait_minutes: 20 },
+      { work_minutes: 5, wait_minutes: 10 },
+    ],
+    { takt_available_minutes: 420, takt_demand: 35 },
+  ),
+  { cycle: 15, wait: 30, lead: 45, takt: 12, efficiency: 33 },
+);
+assert.deepEqual(metrics([], {}), { cycle: 0, wait: 0, lead: 0, takt: null, efficiency: 0 });
+assert.equal(metrics([], { takt_available_minutes: 420, takt_demand: 0 }).takt, null);
+assert.equal(metrics([], { takt_available_minutes: 420, takt_demand: null }).takt, null);
+assert.deepEqual(
+  values([
+    ['takt_available_minutes', '420'],
+    ['takt_demand', ''],
+    ['takt_period', 'day'],
+  ]),
+  { takt_available_minutes: 420, takt_demand: null, takt_period: 'day' },
+);
+console.log(
+  'Service timing checks passed: active cycle, elapsed lead, takt, empty streams, and optional inputs.',
+);

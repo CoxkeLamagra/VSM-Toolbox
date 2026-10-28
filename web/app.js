@@ -217,33 +217,34 @@ function formValues(form) {
       .map((key) => Number(key.slice(5)));
     for (const key of Object.keys(data)) if (key.startsWith('_pcf_')) delete data[key];
   }
-  for (const key of ['cva', 'bva']) {
+  for (const key of ['cva', 'bva', 'takt_available_minutes', 'takt_demand']) {
     if (key in data) data[key] = data[key] === '' ? null : Number(data[key]);
   }
   return data;
 }
-function stats(items) {
-  const work = items.reduce((n, s) => n + s.work_minutes, 0),
-    wait = items.reduce((n, s) => n + s.wait_minutes, 0);
-  return /* HTML */ `
-    <div class="stats">
-      <div class="stat">
-        <div class="label">Total lead time</div>
-        <strong>${duration(work + wait)}</strong>
-        <span>Work time + waiting time</span>
-      </div>
-      <div class="stat">
-        <div class="label">Work time</div>
-        <strong>${duration(work)}</strong>
-        <span>Time spent actively delivering</span>
-      </div>
-      <div class="stat">
-        <div class="label">Flow efficiency</div>
-        <strong>${work + wait ? Math.round((work / (work + wait)) * 100) : 0}%</strong>
-        <span>Work time / total lead time</span>
-      </div>
-    </div>
-  `;
+function serviceTimeMetrics(items, stream = {}) {
+  const cycle = items.reduce((total, step) => total + step.work_minutes, 0);
+  const wait = items.reduce((total, step) => total + step.wait_minutes, 0);
+  const takt =
+    stream.takt_available_minutes > 0 && stream.takt_demand > 0
+      ? stream.takt_available_minutes / stream.takt_demand
+      : null;
+  return {
+    cycle,
+    wait,
+    lead: cycle + wait,
+    takt,
+    efficiency: cycle + wait ? Math.round((cycle / (cycle + wait)) * 100) : 0,
+  };
+}
+function stats(items, stream) {
+  const times = serviceTimeMetrics(items, stream);
+  return `<div class="stats service-time-stats">
+    <div class="stat"><div class="label">Cycle time (processing)</div><strong>${duration(times.cycle)}</strong><span>Total active work per request, excluding waiting</span></div>
+    <div class="stat"><div class="label">Lead time</div><strong>${duration(times.lead)}</strong><span>Active work + waiting across all steps</span></div>
+    <div class="stat"><div class="label">Takt time</div><strong>${times.takt === null ? 'Not set' : duration(times.takt) + '/request'}</strong><span>${times.takt === null ? 'Set net available time and demand in stream details' : `${duration(stream.takt_available_minutes)} available ÷ ${esc(stream.takt_demand)} requests per ${esc(stream.takt_period || 'day')}`}</span></div>
+    <div class="stat"><div class="label">Flow efficiency</div><strong>${times.efficiency}%</strong><span>Active processing time / lead time</span></div>
+  </div><p class="hint">Service mapping convention: cycle time is active processing per request; lead time includes queues and delays. Totals assume sequential steps. Takt is the required delivery pace for customer demand, not actual completion time.</p>`;
 }
 let environmentList = [],
   environmentMembers = [];
@@ -418,7 +419,7 @@ function renderStream() {
           ? items
               .map(
                 (s, i) =>
-                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${valueRatingBadges(s)}${tagBadges(s)}<div class="timing"><div>Work time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div></div>${state.step_processes
+                  `${i ? '<div class="arrow">→</div>' : ''}<article class="step" draggable="true" data-id="${s.id}"><div class="step-number">STEP ${String(i + 1).padStart(2, '0')} · DRAG TO REORDER</div><h3>${esc(s.name)}</h3><p>${esc(s.owner || 'No owner assigned')}</p>${valueRatingBadges(s)}${tagBadges(s)}<div class="timing"><div>Cycle time<b>${duration(s.work_minutes)}</b></div><div>Wait time<b>${duration(s.wait_minutes)}</b></div><div>Lead time<b>${duration(s.work_minutes + s.wait_minutes)}</b></div></div>${state.step_processes
                     .filter((l) => l.step_id === s.id)
                     .map(
                       (l) => /* HTML */ `
@@ -468,7 +469,7 @@ function renderStream() {
         ${esc(stream.outcome || 'Not defined')}
       </div>
     </div>
-    ${stats(items)}
+    ${stats(items, stream)}
     <div class="section-row">
       <h2>${streamMode === 'diagram' ? 'Value stream diagram' : 'Delivery flow'}</h2>
       <div class="view-switch" role="group" aria-label="Stream view">
@@ -781,7 +782,7 @@ function renderProcesses() {
     };
   }
 }
-const field = (name, label, value = '', type = 'text') => /* HTML */ `
+const field = (name, label, value = '', type = 'text', optional = false) => /* HTML */ `
   <label>
     ${label}${type === 'textarea'
       ? /* HTML */ `
@@ -793,7 +794,7 @@ const field = (name, label, value = '', type = 'text') => /* HTML */ `
             type="${type}"
             value="${esc(value)}"
             ${name === 'name' ? 'required maxlength="200"' : ''}
-            ${type === 'number' ? 'min="0" step="any" required' : ''}
+            ${type === 'number' ? `min="0" step="any" ${optional ? '' : 'required'}` : ''}
           />
         `}
   </label>
@@ -1458,12 +1459,16 @@ function valueRatingPicker(item) {
 function valueRatingBadges(item) {
   return `<div class="value-rating-badges">${['cva', 'bva'].map((key) => `<span class="pill" title="${key === 'cva' ? 'Customer' : 'Business'} Value Add">${key.toUpperCase()}: ${item[key] ? `${item[key]} - ${VALUE_RATINGS[item[key]]}` : 'Not rated'}</span>`).join('')}</div>`;
 }
+function taktTimeFields(stream) {
+  return `<fieldset class="value-ratings"><legend>Takt time — customer demand</legend><p class="hint">Use the same period for both inputs. Net available working time excludes breaks and planned downtime; demand is the number of customer requests to deliver in that period.</p>${field('takt_available_minutes', 'Net available working time (minutes per period)', stream.takt_available_minutes, 'number', true)}${field('takt_demand', 'Customer demand (requests per period)', stream.takt_demand, 'number', true)}<label>Demand period<select name="takt_period" aria-label="Demand period">${['shift', 'day', 'week', 'month'].map((period) => `<option value="${period}" ${period === (stream.takt_period || 'day') ? 'selected' : ''}>${period}</option>`).join('')}</select></label><p class="hint">Takt time = net available working time ÷ customer demand. Leave either input blank to keep it unset.</p></fieldset>`;
+}
 function editStream(id) {
   const s = state.streams.find((s) => s.id === id) || {};
   modal(
     id ? 'Edit value stream' : 'Create value stream',
     field('name', 'Stream name', s.name) +
       valueRatingPicker(s) +
+      taktTimeFields(s) +
       field('customer', 'Customer / beneficiary', s.customer) +
       field('outcome', 'Desired value', s.outcome) +
       field('description', 'Description', s.description, 'textarea') +
@@ -1486,6 +1491,7 @@ function editStep(id) {
       field('owner', 'Responsible team / owner', s.owner) +
       field('work_minutes', 'Active work time (minutes)', s.work_minutes, 'number') +
       field('wait_minutes', 'Waiting time (minutes)', s.wait_minutes, 'number') +
+      '<p id="stepTimePreview" class="hint" aria-live="polite"></p>' +
       tagPicker(s),
     async (data) => {
       data.work_minutes = Number(data.work_minutes);
@@ -1497,6 +1503,17 @@ function editStep(id) {
       await api('steps' + (id ? '/' + id : ''), id ? 'PUT' : 'POST', data);
     },
   );
+  const updateTimes = () => {
+    const work = Number($('#fields [name="work_minutes"]').value);
+    const wait = Number($('#fields [name="wait_minutes"]').value);
+    $('#stepTimePreview').textContent =
+      Number.isFinite(work + wait) && work >= 0 && wait >= 0
+        ? `Cycle time (active work): ${duration(work)} · Lead time (work + wait): ${duration(work + wait)}`
+        : 'Enter valid nonnegative times.';
+  };
+  for (const name of ['work_minutes', 'wait_minutes'])
+    $('#fields [name="' + name + '"]').oninput = updateTimes;
+  updateTimes();
 }
 function editProcess(id) {
   const p = state.processes.find((p) => p.id === id) || {};
@@ -2544,7 +2561,8 @@ class StreamDiagram {
         x: 340 + i * 340,
         y: 80,
         w: 260,
-        h: step.tag_ids?.length ? 235 : 200,
+        h: step.tag_ids?.length ? 259 : 224,
+        lead: step.work_minutes + step.wait_minutes,
         cva: step.cva,
         bva: step.bva,
         tags: assignedTags(step),
@@ -2775,9 +2793,10 @@ class StreamDiagram {
     if (node.kind === 'step') {
       return `<text class="node-owner" x="20" y="104">${esc(this.textLines(node.owner || 'No owner assigned', 32, 1)[0])}</text>
         <path class="node-divider" d="M20 120 H${node.w - 20}"/>
-        <text class="node-timing" x="20" y="147">Work ${duration(node.work)}</text>
+        <text class="node-timing" x="20" y="147">Cycle ${duration(node.work)}</text>
         <text class="node-timing" x="140" y="147">Wait ${duration(node.wait)}</text>
-        <text class="node-owner" x="20" y="172">${esc(['cva', 'bva'].map((key) => `${key.toUpperCase()}: ${node[key] ? `${node[key]} - ${VALUE_RATINGS[node[key]]}` : 'Not rated'}`).join(' · '))}</text>`;
+        <text class="node-timing" x="20" y="172">Lead ${duration(node.lead)}</text>
+        <text class="node-owner" x="20" y="196">${esc(['cva', 'bva'].map((key) => `${key.toUpperCase()}: ${node[key] ? `${node[key]} - ${VALUE_RATINGS[node[key]]}` : 'Not rated'}`).join(' · '))}</text>`;
     }
     if (node.kind === 'process') {
       return `<text class="node-owner" x="20" y="103">${esc(this.textLines(node.owner || 'No owner assigned', 30, 1)[0])}</text>
@@ -3019,7 +3038,9 @@ class StreamDiagram {
             valueRatingPicker(step) +
             field('owner', 'Responsible team / owner', step.owner) +
             field('work_minutes', 'Active work time (minutes)', step.work_minutes) +
-            field('wait_minutes', 'Waiting time (minutes)', step.wait_minutes),
+            field('wait_minutes', 'Waiting time (minutes)', step.wait_minutes) +
+            field('cycle_minutes', 'Cycle time (minutes)', step.work_minutes) +
+            field('lead_minutes', 'Lead time (minutes)', step.work_minutes + step.wait_minutes),
           null,
           true,
         );

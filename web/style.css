@@ -1506,3 +1506,10 @@ body.sidebar-collapsed .app-version {
   border: 1px solid #e0e1e7;
   border-radius: 8px;
 }
+
+.service-time-stats {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.timing {
+  flex-wrap: wrap;
+}

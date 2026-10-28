@@ -439,3 +439,21 @@ The application caps HTTP workers at 32, idle socket waits at 15 seconds, and ea
 Value streams and individual delivery steps each have independent **Customer Value Add (CVA)** and **Business Value Add (BVA)** classifications: **3 - High**, **2 - Medium**, **1 - Low**, or **Not rated**. Set or clear them in the stream/step edit forms. Ratings appear on stream cards, stream details, delivery-flow cards, and diagram step cards. Stream ratings are entered directly, rather than calculated from step ratings. Existing records remain unrated. Environment Admins/Editors can edit ratings; Viewers can inspect them.
 
 The stream and step API resources accept optional `cva` and `bva` fields with integer values 1–3 or `null` to clear a rating. Omitting either field on update preserves its current value. The database migration is additive, and local backups retain ratings with their stream/step records.
+
+### Service cycle, lead, and takt time
+
+The value stream uses an explicit Lean service-mapping convention, with all step times entered **per customer request**:
+
+| Metric | Calculation | Meaning |
+|---|---|---|
+| Cycle time (processing) | Step active work time; stream = sum of step active work | Hands-on processing effort per request, excluding waiting |
+| Lead time | Work + wait per step; stream = sum across sequential steps | Mapped elapsed time from request to delivery, including queues/delays |
+| Takt time | Net available working minutes ÷ customer requests in the same period | Required delivery pace to match customer demand |
+
+For example, 15 minutes of active work and 30 minutes of waiting produce a processing cycle time of 15 minutes and a lead time of 45 minutes. With 420 net available minutes and demand for 35 requests per day, takt is 12 minutes per request. Takt is a demand target, not the actual cycle or lead time. Available time excludes breaks/planned downtime; use a consistent shift, day, week, or month for both inputs.
+
+Set the optional takt inputs under **Edit details → Takt time — customer demand**. Zero/negative demand or available time is rejected, and takt remains **Not set** when either input is blank. Existing streams stay unconfigured. Step forms preview cycle/lead times as you edit work/wait values. Flow cards and diagram step cards show both; the stream header shows totals, takt, and flow efficiency.
+
+These are estimates from the mapped sequential steps, not timestamp measurements or a working-calendar simulation. Include all relevant waiting in the steps. Parallel work, staffing, request mix, throughput, and bottlenecks require separate analysis; summed processing time alone does not establish delivery capacity. The term cycle time can also mean observed completion intervals in other Lean contexts; this UI labels it **processing** to state its convention clearly.
+
+API stream fields: `takt_available_minutes` and `takt_demand` accept finite positive numbers or `null`; `takt_period` accepts `shift`, `day`, `week`, or `month` (default `day`). Omitted inputs preserve existing values. The calculated cycle/lead values derive from the existing step work/wait times rather than being stored as independent, potentially stale values.
