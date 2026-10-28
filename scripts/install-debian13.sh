@@ -243,10 +243,31 @@ curl --noproxy '*' --fail --silent --max-time 5 http://127.0.0.1:8080/api/sessio
 systemctl enable nginx
 systemctl is-enabled --quiet nginx
 systemctl reload-or-restart nginx
-curl --noproxy '*' --fail --silent --max-time 10 --cacert /etc/vsm-toolbox/tls/certificate.pem "https://$HTTPS_IP/api/health" | \
-    python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"'
-REDIRECT=$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "http://$HTTPS_IP/")
-[[ $REDIRECT == 301 ]] || { echo 'HTTPS redirect health check failed.' >&2; exit 1; }
+# Wait for asynchronous Nginx reload to activate both listeners.
+HTTPS_READY=0
+echo "Waiting for HTTPS on $HTTPS_IP:443..."
+for ((attempt=0; attempt<30; attempt++)); do
+    if systemctl is-active --quiet nginx && \
+       curl --noproxy '*' --fail --silent --show-error --connect-timeout 2 --max-time 2 \
+         --cacert /etc/vsm-toolbox/tls/certificate.pem "https://$HTTPS_IP/api/health" 2>>"$TEMP/https-health.log" | \
+       python3 -c 'import json,sys; assert json.load(sys.stdin)["status"] == "ok"' 2>>"$TEMP/https-health.log"; then
+        REDIRECT=$(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --connect-timeout 2 --max-time 2 "http://$HTTPS_IP/" 2>>"$TEMP/https-health.log") || REDIRECT=unavailable
+        if [[ $REDIRECT == 301 ]]; then
+            HTTPS_READY=1
+            break
+        fi
+        echo "HTTP redirect not ready (status $REDIRECT)." >>"$TEMP/https-health.log"
+    fi
+    sleep 1
+done
+if ((HTTPS_READY == 0)); then
+    echo "HTTPS did not become healthy at https://$HTTPS_IP/; restoring the previous configuration." >&2
+    tail -20 "$TEMP/https-health.log" >&2 || true
+    journalctl -u nginx -n 40 --no-pager >&2 || true
+    exit 1
+fi
+# HTTPS activation succeeded.
 ACTIVATED=0
 TLS_ACTIVATED=0
 printf '\nVSM Toolbox installed and healthy.\nOpen https://%s/\n' "$HTTPS_IP"
