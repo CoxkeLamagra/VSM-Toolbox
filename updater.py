@@ -483,6 +483,8 @@ def clear_business_data(db):
             table: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
             for table in ('streams', 'steps', 'processes', 'pcf_entries')
         }
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workshops'").fetchone():
+            conn.execute('DELETE FROM workshops')
         conn.execute('DELETE FROM streams')
         conn.execute('DELETE FROM processes')
         # Parent deletion is RESTRICTed: remove PCF leaves before their parents.
@@ -725,7 +727,7 @@ class Supervisor:
                 committed = True
                 self.report(
                     'succeeded',
-                    'Value streams, delivery steps, processes, and PCF entries cleared. Accounts, branding, tags, and backups were retained.',
+                    'Value streams, delivery steps, processes, PCF entries, and mapping workshops cleared. Accounts, branding, tags, and backups were retained.',
                     backup=str(safety),
                     cleared=counts,
                 )

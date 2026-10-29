@@ -53,7 +53,15 @@ class EnvironmentRepository:
                 **dict(row),
                 'counts': {
                     key: 0
-                    for key in ('streams', 'steps', 'processes', 'pcf_entries', 'tags', 'members')
+                    for key in (
+                        'streams',
+                        'steps',
+                        'processes',
+                        'pcf_entries',
+                        'tags',
+                        'workshops',
+                        'members',
+                    )
                 },
             }
             for row in rows
@@ -64,6 +72,7 @@ class EnvironmentRepository:
             'processes',
             'pcf_entries',
             'tags',
+            'workshops',
             'environment_members',
         ):
             key = 'members' if table == 'environment_members' else table

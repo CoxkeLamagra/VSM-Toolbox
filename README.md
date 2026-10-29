@@ -4,7 +4,8 @@ A local web application for mapping IT service value streams and documenting the
 
 ## Features
 
-- Create value streams with a customer, desired outcome, and description.
+- Create value streams with a customer, desired value, and description.
+- Run collaborative Brown Paper sessions in the separate Value Stream Mapping workspace, with a shared canvas and reusable blocks.
 - Explore an interactive diagram with delivery steps, customer outcomes, and all linked processes. Pan, drag cards, zoom with the mouse wheel or touch pinch, and fit the whole map to the screen.
 - Use Edit flow to manage delivery steps and reorder their sequence.
 - Assign responsible teams and record active work and waiting time in minutes.
@@ -15,7 +16,7 @@ A local web application for mapping IT service value streams and documenting the
 - Create local accounts and assign Admin, Editor, or Viewer access.
 - Check and install the latest GitHub main revision from the Administrator menu.
 
-For example, map **Restore customer service**: report incident → triage → investigate → restore service → confirm resolution. Link incident classification, escalation, and service restoration procedures to the appropriate steps. Maps currently represent a linear current-state journey; branching, parallel flows, version history, and collaborative editing are future extensions.
+For example, map **Restore customer service**: report incident → triage → investigate → restore service → confirm resolution. Link incident classification, escalation, and service restoration procedures to the appropriate steps. Structured value streams represent a sequential journey. The separate workshop canvas supports freely arranged blocks, branching connectors, and collaboration; it does not execute processes or provide version history.
 
 ## Development
 
@@ -26,6 +27,28 @@ python3 -m unittest discover -s tests -v
 ```
 
 Open port 8080 in your browser. The default bind address is `127.0.0.1`. The application creates `data/vsm.sqlite3` on first launch. Create the first Admin account in the browser. `python3 app.py` also supports development without the update supervisor; web updates will be unavailable in that mode. No initial example data is inserted. Set `VSM_HOST`, `VSM_PORT`, and `VSM_DATABASE` to override defaults.
+
+## Collaborative Value Stream Mapping workshops
+
+Open **Value Stream Mapping** in the sidebar. Create a named workshop, then choose ready-to-use process steps, Customer / VOC notes, waits / queues, decisions, handoffs, pain points, improvements, and sticky notes from the palette. Each workshop has one large shared canvas. Use **Connect blocks** to draw the flow between two blocks and optionally label the connection.
+
+Select a block to edit its text, owner, current/future state, active work time, and wait time. Press **Save block** to share those details. Drag a block to move it; its position saves on release. Drag empty paper to pan; use the wheel or zoom buttons to zoom, and **Reset view** to return to the initial view. Keyboard users can Tab to a block and press Enter to inspect it; arrow keys move an editable focused block or pan the canvas. The inspector shows complete text when a block's label is shortened.
+
+Other signed-in members open the same environment and workshop to participate. Changes synchronize every two seconds while the tab is visible. The participant list shows accounts seen in the last 15 seconds. Environment Admins and Editors can create, edit, and delete workshops and blocks; Viewers can observe. When two people edit the same block, the first save succeeds and the stale save is rejected with a message: reselect the block, review its current contents, and reapply your change. Changes to different blocks are independent. Unsaved form text is not broadcast. Offline changes are not queued; connection errors are shown and polling retries.
+
+Workshop layouts and content are stored in local SQLite, included in application backups, and scoped to their environment. Deleting an environment also deletes its workshops. The Administrator's backup-first **Clear all business data** action includes workshop boards. Workshop deletion requires typing its name; block deletion requires confirmation and removes attached connectors. Each board supports up to 1,000 blocks and connectors, on a 6,000 × 6,000 canvas. Use **Refresh workshops** to discover boards another participant has just created.
+
+Workshop notes are independent of structured value streams and the process library: they do not automatically create or modify delivery steps, links, or metrics there. There is no external collaboration service or additional runtime dependency. Existing installations apply an additive database migration when the new application starts.
+
+API endpoints (session authentication and environment authorization apply; writes also require CSRF):
+
+- `GET /api/workshops` and `POST /api/workshops` (`name`).
+- `GET /api/workshops/{id}` returns the shared board, items, revisions, and participants.
+- `POST /api/workshops/{id}/items` creates a block; `PUT` / `DELETE /api/workshops/{id}/items/{itemId}` require its current integer `revision`. Conflicts return HTTP 409.
+- `POST /api/workshops/{id}/presence` records the signed-in participant's heartbeat.
+- `DELETE /api/workshops/{id}` requires `confirmation` equal to the board name.
+
+The optional `node tests/workshop.cjs` browser check exercises independent users, synchronization, conflicts, drag/zoom, connectors, escaping, Viewer access, and persistence against a disposable database.
 
 ## Interactive value stream diagrams
 

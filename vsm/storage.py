@@ -85,6 +85,9 @@ def initialize():
         migrate_optional_fields(conn)
         migrate_environments(conn)
         initialize_environment_guards(conn)
+        from .workshops import initialize as initialize_workshops
+
+        initialize_workshops(conn)
 
 
 def migrate_optional_fields(conn):

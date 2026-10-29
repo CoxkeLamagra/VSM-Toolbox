@@ -18,6 +18,7 @@ VSM Toolbox uses Python 3.11+ standard-library modules, SQLite, and browser ES m
 | `pcf.py` | CSV parsing, preview/fingerprint, duplicate decisions and atomic import |
 | `environments.py` | Membership, environment lifecycle, session selection and last-Admin rules |
 | `http.py` | Bounded HTTP serving, routes, sessions/CSRF, transport and maintenance authorization |
+| `workshops.py` | Shared workshop boards, bounded block validation, presence and per-item optimistic concurrency |
 | `runtime.py` | Delivery profiles, manifest validation and static asset allowlist |
 
 Storage owns the `DB` setting and `connect()` transaction context. Repository/domain operations receive a caller-owned connection and do not commit independently. Environment relationships are validated both in repositories and SQLite triggers. Application Admin privileges remain separate from environment roles.
@@ -31,6 +32,7 @@ Storage owns the `DB` setting and `connect()` transaction context. Repository/do
 - `lib/core.js`: escaping, form serialization, service timing, ratings, and workspace indexes.
 - `features/bpmn.js`: measured wrapping, route construction, collision-aware labels and SVG rendering.
 - `features/stream-diagram.js`: interactive diagram controller and private layout cache, with explicit callbacks for session/content access and editing.
+- `features/workshop.js`: environment-scoped shared SVG canvas, block palette/inspector, per-item revision saves, presence and two-second polling. Lifecycle generations discard stale responses after navigation.
 - `features/pcf.js`: PCF views, CSV preview/apply, forms and feature-local navigation/import state. The controller resets that state through the feature API when sessions/environments change.
 
 Feature factories receive explicit dependencies; they do not depend on undeclared page globals. ES module imports are served from a manifest-derived allowlist with JavaScript MIME types and the existing same-origin CSP. There is no bundle-generation step. `package.json` marks development JavaScript as modules; Node is only needed for checks, not installation.
@@ -39,7 +41,7 @@ Feature factories receive explicit dependencies; they do not depend on undeclare
 
 ## Delivery protocol 2 and reinstall transition
 
-This refactor deliberately replaces the six-file delivery restriction with a bounded manifest. **Install it by rerunning the matching Debian installer or rebuilding/recreating the Docker image and selecting its bundled code. Older web-update engines reject protocol 2 safely.** Existing database migrations remain additive; this refactor adds no data/schema changes.
+This refactor deliberately replaces the six-file delivery restriction with a bounded manifest. **Install it by rerunning the matching Debian installer or rebuilding/recreating the Docker image and selecting its bundled code. Older web-update engines reject protocol 2 safely.** Existing database migrations remain additive; the initial modular refactor added no schema changes. Collaborative workshops add separate environment-owned board, item, and presence tables.
 
 `update-manifest.json` is the authoritative runtime inventory. Protocol 2 requires the bootstrap files, accepts at most 128 unique files, and constrains paths to root entry points, Python modules under `vsm/`, and JS/CSS/HTML assets under `web/`. Traversal, absolute paths, duplicate names, and other extensions are rejected. Archives copy only declared regular files into a release directory; links are never extracted. All declared Python files are compiled before activation. Static asset routes use the same declared web inventory.
 

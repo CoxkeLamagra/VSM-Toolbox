@@ -1602,3 +1602,123 @@ body.sidebar-collapsed .app-version {
     overflow-wrap: anywhere;
   }
 }
+
+/* Shared brown paper workshop */
+.workshop-toolbar,
+.workshop-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.workshop-toolbar form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.workshop-toolbar label {
+  min-width: 220px;
+}
+.workshop-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 275px;
+  gap: 16px;
+}
+#workshopCanvas {
+  width: 100%;
+  height: 70vh;
+  min-height: 480px;
+  background: #e8dcc7;
+  border: 1px solid #b8a78b;
+  border-radius: 8px;
+  touch-action: none;
+  cursor: grab;
+}
+.workshop-paper {
+  fill: #e8dcc7;
+}
+.workshop-inspector {
+  position: static;
+  width: auto;
+  padding: 16px;
+  background: white;
+  color: #1e293b;
+  border: 1px solid #d5d9e2;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.workshop-inspector form {
+  display: grid;
+  gap: 10px;
+}
+.workshop-block {
+  cursor: move;
+}
+.workshop-block rect {
+  fill: #fff3a7;
+  stroke: #8a713d;
+  stroke-width: 2;
+}
+.workshop-step rect {
+  fill: #fff;
+}
+.workshop-customer rect {
+  fill: #ccecf8;
+}
+.workshop-wait rect {
+  fill: #fce1be;
+}
+.workshop-decision rect {
+  fill: #e6daf9;
+}
+.workshop-handoff rect {
+  fill: #dce5f2;
+}
+.workshop-pain rect {
+  fill: #ffd2d5;
+}
+.workshop-improvement rect {
+  fill: #d0efce;
+}
+.workshop-block.selected rect,
+.workshop-block:focus rect {
+  stroke: #1665d8;
+  stroke-width: 4;
+}
+.workshop-block text {
+  fill: #17243c;
+  font-size: 14px;
+  pointer-events: none;
+}
+.workshop-block .workshop-kind {
+  font-size: 11px;
+  font-weight: 700;
+}
+.workshop-block .workshop-meta {
+  font-size: 10px;
+}
+.workshop-line {
+  stroke: #334155;
+  stroke-width: 4;
+  cursor: pointer;
+}
+.workshop-line.selected {
+  stroke: #1665d8;
+  stroke-width: 6;
+}
+.workshop-arrow-label {
+  fill: #17243c;
+  font-size: 13px;
+  paint-order: stroke;
+  stroke: #e8dcc7;
+  stroke-width: 4px;
+}
+@media (max-width: 1000px) {
+  .workshop-layout {
+    grid-template-columns: 1fr;
+  }
+  .workshop-inspector {
+    max-height: none;
+  }
+}

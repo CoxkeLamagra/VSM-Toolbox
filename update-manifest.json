@@ -25,6 +25,8 @@
     "web/index.html",
     "web/lib/core.js",
     "web/style.css",
-    "web/features/pcf.js"
+    "web/features/pcf.js",
+    "vsm/workshops.py",
+    "web/features/workshop.js"
   ]
 }

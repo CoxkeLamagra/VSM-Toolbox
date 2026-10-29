@@ -21,6 +21,11 @@ class DataResetTest(test_updater.UpdaterTest):
 
     def seed_content(self):
         with sqlite3.connect(self.db) as db:
+            db.execute("INSERT INTO workshops(id,environment_id,name) VALUES (1,1,'Workshop')")
+            db.execute(
+                "INSERT INTO workshop_items(board_id,payload) VALUES (1,?)",
+                (json.dumps({'kind': 'note', 'text': 'Keep me'}),),
+            )
             db.execute("INSERT INTO steps(id,stream_id,name) VALUES (1,1,'Triage')")
             db.execute("INSERT INTO processes(id,name) VALUES (1,'Incident handling')")
             db.execute('INSERT INTO step_processes VALUES (1,1)')
@@ -51,6 +56,9 @@ class DataResetTest(test_updater.UpdaterTest):
         self.assertEqual(updater.validate_backup(backup)['reason'], 'pre-data-clear')
         with sqlite3.connect(self.db) as db:
             for table in (
+                'workshops',
+                'workshop_items',
+                'workshop_presence',
                 'streams',
                 'steps',
                 'processes',
@@ -83,6 +91,11 @@ class DataResetTest(test_updater.UpdaterTest):
         with sqlite3.connect(self.db) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM pcf_entries').fetchone()[0], 5)
             self.assertEqual(db.execute('SELECT pcf_id FROM stream_pcf').fetchone()[0], 5)
+            self.assertEqual(db.execute('SELECT name FROM workshops').fetchone()[0], 'Workshop')
+            self.assertEqual(
+                json.loads(db.execute('SELECT payload FROM workshop_items').fetchone()[0])['text'],
+                'Keep me',
+            )
 
     def test_backup_failure_never_calls_clear(self):
         self.seed_content()

@@ -1,3 +1,4 @@
+import { createWorkshop } from './features/workshop.js';
 import { createPCFFeature } from './features/pcf.js';
 import {
   esc,
@@ -142,6 +143,12 @@ const steps = (id) => [...(getWorkspaceIndex().stepsByStream.get(id) || [])];
 // One registry owns page access, optional loading, rendering, and navigation.
 const VIEWS = {
   streams: { render: renderContent },
+  workshop: {
+    render: () => {
+      $('#breadcrumb').textContent = 'Value Stream Mapping';
+      workshop.mount();
+    },
+  },
   environments: {
     render: renderEnvironments,
     load: async () => {
@@ -258,6 +265,7 @@ function renderEnvironments() {
     steps: 'Delivery steps',
     processes: 'Processes',
     pcf_entries: 'PCF entries',
+    workshops: 'Mapping workshops',
     tags: 'Tags',
     members: 'Members',
   };
@@ -273,9 +281,9 @@ function renderEnvironments() {
             )
             .join(
               '',
-            )}</div><div class="detail-actions"><button data-action="environment-content" data-target="streams">Value streams</button><button data-action="environment-content" data-target="processes">Processes</button><button data-action="environment-content" data-target="pcf">PCF framework</button></div></section>`
+            )}</div><div class="detail-actions"><button data-action="environment-content" data-target="streams">Value streams</button><button data-action="environment-content" data-target="processes">Processes</button><button data-action="environment-content" data-target="pcf">PCF framework</button><button data-action="environment-content" data-target="workshop">Value Stream Mapping</button></div></section>`
         : '<div class="empty"><h2>Create your first environment</h2><p>Its creator becomes the environment Admin and can invite existing local accounts.</p></div>'
-    }<div class="section-row"><h2>Your environments</h2><span class="label">${environmentList.length} environments</span></div><div class="grid">${environmentList.map((environment) => `<article class="environment-card"><span class="pill">${esc(environment.role)}${environment.id === active?.id ? ' · Active' : ''}</span><h3>${esc(environment.name)}</h3><p>${esc(environment.description || 'An independent local workspace.')}</p><p>${environment.counts.streams} value streams · ${environment.counts.processes} processes · ${environment.counts.pcf_entries} PCF entries</p><button data-action="switch-environment" data-id="${environment.id}" ${environment.id === active?.id ? 'disabled' : ''}>Switch environment</button></article>`).join('')}</div>${active?.role === 'Admin' ? `<section class="environment-members"><h2>Environment members</h2><p>Add existing local accounts and set their role in this environment.</p><form id="addEnvironmentMember"><label>Local username<input name="username" aria-label="Local username" required maxlength="64"></label><label>Environment role<select name="role" aria-label="Environment role"><option>Viewer</option><option>Editor</option><option>Admin</option></select></label><button type="submit">Add member</button></form><div class="table-wrap"><table><thead><tr><th>Username</th><th>Environment role</th><th>Actions</th></tr></thead><tbody>${environmentMembers.map((member) => `<tr><td>${esc(member.username)}</td><td>${esc(member.role)}</td><td><button data-action="edit-environment-member" data-id="${member.user_id}">Edit role</button><button class="danger" data-action="remove-environment-member" data-id="${member.user_id}">Remove member</button></td></tr>`).join('')}</tbody></table></div><p class="hint">The last environment Admin cannot be removed or demoted. Application accounts and other environments are unaffected by membership changes.</p></section>` : ''}`;
+    }<div class="section-row"><h2>Your environments</h2><span class="label">${environmentList.length} environments</span></div><div class="grid">${environmentList.map((environment) => `<article class="environment-card"><span class="pill">${esc(environment.role)}${environment.id === active?.id ? ' · Active' : ''}</span><h3>${esc(environment.name)}</h3><p>${esc(environment.description || 'An independent local workspace.')}</p><p>${environment.counts.streams} value streams · ${environment.counts.processes} processes · ${environment.counts.pcf_entries} PCF entries · ${environment.counts.workshops || 0} mapping workshops</p><button data-action="switch-environment" data-id="${environment.id}" ${environment.id === active?.id ? 'disabled' : ''}>Switch environment</button></article>`).join('')}</div>${active?.role === 'Admin' ? `<section class="environment-members"><h2>Environment members</h2><p>Add existing local accounts and set their role in this environment.</p><form id="addEnvironmentMember"><label>Local username<input name="username" aria-label="Local username" required maxlength="64"></label><label>Environment role<select name="role" aria-label="Environment role"><option>Viewer</option><option>Editor</option><option>Admin</option></select></label><button type="submit">Add member</button></form><div class="table-wrap"><table><thead><tr><th>Username</th><th>Environment role</th><th>Actions</th></tr></thead><tbody>${environmentMembers.map((member) => `<tr><td>${esc(member.username)}</td><td>${esc(member.role)}</td><td><button data-action="edit-environment-member" data-id="${member.user_id}">Edit role</button><button class="danger" data-action="remove-environment-member" data-id="${member.user_id}">Remove member</button></td></tr>`).join('')}</tbody></table></div><p class="hint">The last environment Admin cannot be removed or demoted. Application accounts and other environments are unaffected by membership changes.</p></section>` : ''}`;
   if (active?.role === 'Admin')
     $('#addEnvironmentMember').onsubmit = async (event) => {
       event.preventDefault();
@@ -1245,6 +1253,7 @@ $('#content').addEventListener('drop', async (e) => {
   }
 });
 function render() {
+  workshop.stop();
   diagramController?.destroy();
   diagramController = null;
   clearTimeout(updateTimer);
@@ -1335,7 +1344,7 @@ function renderDataManagement() {
   const disabled = busy || !operation.available || !maintenanceState.supported;
   $('#breadcrumb').textContent = 'Administrator / Data management';
   $('#content').innerHTML =
-    `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Data management</h1><p>Clear business content after creating a local safety backup.</p></div></div><section class="data-danger-panel"><h2>Clear all business data</h2><p class="data-warning" role="note"><strong>Warning: this removes content in ALL environments: value streams, delivery steps / process flows, processes, PCF entries, and their links.</strong> Accounts, branding, tag definitions, tag categories, and existing backups remain.</p><p>A full local application and database backup is required before deletion. If backup creation fails, nothing is deleted. The application restarts briefly; failed startup restores the backup. You can restore the saved backup from Backups & restore.</p><p role="status">${esc(operation.message || 'Ready')}</p>${operation.backup ? `<p>Latest operation backup: <code>${esc(operation.backup)}</code></p>` : ''}${!maintenanceState.supported ? '<p class="hint">Rerun the updated Debian installer or rebuild the Docker image once to enable safe data clearing.</p>' : ''}<form id="clearDataForm"><label>Type DELETE ALL BUSINESS DATA to confirm<input name="confirmation" aria-label="Confirmation text" autocomplete="off" required pattern="DELETE ALL BUSINESS DATA" ${disabled ? 'disabled' : ''}></label><button class="danger" type="submit" ${disabled ? 'disabled' : ''}>Create backup and clear all data</button></form></section>`;
+    `<div class="eyebrow">ADMINISTRATOR</div><div class="title-row"><div><h1>Data management</h1><p>Clear business content after creating a local safety backup.</p></div></div><section class="data-danger-panel"><h2>Clear all business data</h2><p class="data-warning" role="note"><strong>Warning: this removes content in ALL environments: value streams, delivery steps / process flows, processes, PCF entries, mapping workshops, and their links.</strong> Accounts, branding, tag definitions, tag categories, and existing backups remain.</p><p>A full local application and database backup is required before deletion. If backup creation fails, nothing is deleted. The application restarts briefly; failed startup restores the backup. You can restore the saved backup from Backups & restore.</p><p role="status">${esc(operation.message || 'Ready')}</p>${operation.backup ? `<p>Latest operation backup: <code>${esc(operation.backup)}</code></p>` : ''}${!maintenanceState.supported ? '<p class="hint">Rerun the updated Debian installer or rebuild the Docker image once to enable safe data clearing.</p>' : ''}<form id="clearDataForm"><label>Type DELETE ALL BUSINESS DATA to confirm<input name="confirmation" aria-label="Confirmation text" autocomplete="off" required pattern="DELETE ALL BUSINESS DATA" ${disabled ? 'disabled' : ''}></label><button class="danger" type="submit" ${disabled ? 'disabled' : ''}>Create backup and clear all data</button></form></section>`;
   $('#clearDataForm').onsubmit = async (event) => {
     event.preventDefault();
     if (
@@ -1939,6 +1948,8 @@ $('#sidebarToggle').onclick = () => {
   $('#sidebarToggle').title = label;
   $('#sidebarToggle span').textContent = label;
 };
+
+const workshop = createWorkshop({ api, canEdit, root: () => $('#content'), report: error });
 
 for (const name of Object.keys(VIEWS)) {
   navigationButton(name).onclick = () => navigate(name);

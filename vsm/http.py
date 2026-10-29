@@ -26,6 +26,7 @@ from .repository import ContentRepository
 from .pcf import PCFImporter
 from .resources import RESOURCES
 from .environments import EnvironmentRepository
+from .workshops import Workshops
 from .runtime import STATIC_ASSETS
 
 ADMIN_READ_PATHS = ('/api/roles', '/api/users', '/api/updates', '/api/backups', '/api/maintenance')
@@ -461,6 +462,10 @@ class Handler(BaseHTTPRequestHandler):
         if re.fullmatch(r'/api/environments/[0-9]+', path):
             return self.environment_member(conn, int(path.split('/')[3]))
         environment = self.require_environment(conn)
+        if re.fullmatch(r'/api/workshops(?:/[0-9]+)?', path):
+            return Workshops(conn, environment['id']).read(
+                int(path.split('/')[3]) if path.count('/') == 3 else None
+            )
         repository = ContentRepository(conn, environment['id'])
         if path == '/api/data':
             return repository.snapshot()
@@ -678,6 +683,14 @@ class Handler(BaseHTTPRequestHandler):
                         if path.endswith('/preview')
                         else importer.apply(data['fingerprint'], data['decisions'])
                     )
+                    status, cookie = 200, None
+                elif len(parts) >= 2 and parts[:2] == ['api', 'workshops']:
+                    presence = len(parts) == 4 and parts[3] == 'presence' and method == 'POST'
+                    environment = self.require_environment(
+                        conn, ROLES if presence else ('Admin', 'Editor'), csrf=True
+                    )
+                    user = self.require_user(conn)
+                    result = Workshops(conn, environment['id']).mutate(parts, method, data, user)
                     status, cookie = 200, None
                 elif path == '/api/branding' and method == 'PUT':
                     self.require_user(conn, ('Admin',), csrf=True)
